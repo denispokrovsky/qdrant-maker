@@ -1,98 +1,139 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
+import os
+from src.processor import NewsProcessor
+from src.utils import initialize_session_state, get_env_path
 from pathlib import Path
 from datetime import datetime
-import hashlib
-from typing import List, Dict
-import os
 
-from qdrant_client import QdrantClient
-from qdrant_client.http import models
-from sentence_transformers import SentenceTransformer
+# Get paths from environment variables or use defaults
+NEWS_DIR = get_env_path("NEWS_DIR", "./news_files")
+QDRANT_DIR = get_env_path("QDRANT_DIR", "./qdrant_storage")
 
-# Add storage path configuration
-def initialize_storage_settings():
-    if 'storage_path' not in st.session_state:
-        # Default to user's documents folder
-        default_path = os.path.join(os.path.expanduser("~"), "Documents", "NewsDatabase")
-        st.session_state.storage_path = default_path
-
-    if 'processed_hashes' not in st.session_state:
-        st.session_state.processed_hashes = set()
+def display_statistics(processor):
+    """Display database statistics in the sidebar"""
+    stats = processor.get_statistics()
     
-    if 'processor' not in st.session_state:
-        st.session_state.processor = None
+    if stats:
+        st.sidebar.header("Database Statistics")
+        st.sidebar.metric("Total Documents", stats['total_documents'])
+        st.sidebar.metric("Unique Companies", stats['unique_companies'])
+        
+        if stats['date_range']['earliest'] and stats['date_range']['latest']:
+            st.sidebar.markdown("**Date Range:**")
+            st.sidebar.text(f"From: {stats['date_range']['earliest'].strftime('%Y-%m-%d')}")
+            st.sidebar.text(f"To: {stats['date_range']['latest'].strftime('%Y-%m-%d')}")
+        
+        if stats['sources']:
+            with st.sidebar.expander("Source Files"):
+                for source in stats['sources']:
+                    st.text(source)
 
-class NewsProcessor:
-    def __init__(self, storage_path: str):
-        """
-        Initialize NewsProcessor with custom storage path
-        """
-        self.storage_path = storage_path
-        os.makedirs(self.storage_path, exist_ok=True)
-        
-        # Initialize the embeddings model
-        self.model = SentenceTransformer('sergeyzh/LaBSE-ru-turbo')
-        
-        # Initialize Qdrant client with custom path
-        qdrant_path = os.path.join(self.storage_path, "qdrant_storage")
-        self.qdrant = QdrantClient(path=qdrant_path)
-        
-        # Collection configuration
-        self.collection_name = "company_news"
-        if not self.qdrant.collection_exists(self.collection_name):
-            self.qdrant.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=models.VectorParams(
-                    size=self.model.get_sentence_embedding_dimension(),
-                    distance=models.Distance.COSINE
-                )
-            )
-
-    # ... rest of the NewsProcessor methods remain the same ...
+def upload_files():
+    """Handle file uploads"""
+    uploaded_files = st.file_uploader(
+        "Choose Excel files", 
+        type="xlsx",
+        accept_multiple_files=True
+    )
+    return uploaded_files
 
 def main():
     st.set_page_config(page_title="News Clips Processor", layout="wide")
     
     st.title("News Clips Processor")
     
-    # Initialize storage settings
-    initialize_storage_settings()
+    # Initialize session state
+    initialize_session_state()
     
-    # Storage configuration section
-    with st.expander("Storage Settings"):
-        new_path = st.text_input(
-            "Database Storage Location",
-            value=st.session_state.storage_path,
-            help="Specify the full path where the database will be stored"
-        )
-        
-        if new_path != st.session_state.storage_path:
-            if st.button("Update Storage Location"):
-                try:
-                    # Create directory if it doesn't exist
-                    os.makedirs(new_path, exist_ok=True)
-                    st.session_state.storage_path = new_path
-                    # Reset processor to use new location
-                    st.session_state.processor = None
-                    st.success(f"Storage location updated to: {new_path}")
-                    st.info("Please note that this creates a new database. Previous data will remain in the old location.")
-                except Exception as e:
-                    st.error(f"Error setting storage location: {str(e)}")
+    # Ensure directories exist
+    os.makedirs(QDRANT_DIR, exist_ok=True)
+    os.makedirs(NEWS_DIR, exist_ok=True)
     
-    # Initialize processor if needed
+    # Display configured paths
+    st.sidebar.header("Configuration")
+    st.sidebar.info(f"Database location: {QDRANT_DIR}")
+    
+    # Initialize processor
     if st.session_state.processor is None:
         try:
-            st.session_state.processor = NewsProcessor(st.session_state.storage_path)
+            st.session_state.processor = NewsProcessor(QDRANT_DIR)
+            st.sidebar.success("Database connected successfully!")
         except Exception as e:
             st.error(f"Error initializing database: {str(e)}")
             st.stop()
     
-    # Display current storage location
-    st.info(f"Current database location: {st.session_state.storage_path}")
+    # Display database statistics
+    display_statistics(st.session_state.processor)
     
-    # Rest of your app code (tabs, processing, search) remains the same...
+    # Database management
+    with st.sidebar.expander("Database Management"):
+        if st.button("Clear Database", key="clear_db"):
+            if st.session_state.processor.clear_database():
+                st.success("Database cleared successfully!")
+                st.experimental_rerun()
+    
+    # Main interface tabs
+    tab1, tab2 = st.tabs(["Process Files", "Search News"])
+    
+    # File Processing Tab
+    with tab1:
+        st.header("Process Files")
+        uploaded_files = upload_files()
+        
+        if uploaded_files:
+            total_processed = 0
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            for i, file in enumerate(uploaded_files):
+                status_text.text(f"Processing {file.name}...")
+                processed_count = st.session_state.processor.process_excel_file(file)
+                total_processed += processed_count
+                progress_bar.progress((i + 1) / len(uploaded_files))
+            
+            status_text.text("Processing complete!")
+            st.success(f"Processed {len(uploaded_files)} files. Added {total_processed} unique news items.")
+            st.experimental_rerun()
+    
+    # Search Tab
+    with tab2:
+        st.header("Search News")
+        
+        companies = ["All Companies"] + st.session_state.processor.get_unique_companies()
+        
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            search_query = st.text_input("Search Query", "")
+        
+        with col2:
+            selected_company = st.selectbox("Filter by Company", companies)
+        
+        num_results = st.slider("Number of results", min_value=1, max_value=20, value=5)
+        
+        if st.button("Search"):
+            if not search_query:
+                st.warning("Please enter a search query.")
+            else:
+                with st.spinner("Searching..."):
+                    results = st.session_state.processor.search_news(
+                        query=search_query,
+                        company=selected_company,
+                        limit=num_results
+                    )
+                
+                if not results:
+                    st.info("No results found.")
+                else:
+                    for i, result in enumerate(results, 1):
+                        with st.expander(f"Result {i} - {result['company']} ({result['date'][:10]})"):
+                            st.markdown(f"**Relevance Score:** {result['similarity']:.2f}")
+                            st.markdown(f"**Company:** {result['company']}")
+                            st.markdown(f"**Date:** {result['date']}")
+                            st.markdown(f"**Source:** {result['source_file']}")
+                            st.markdown(f"**Processed:** {result['processed_date']}")
+                            st.markdown("**Text:**")
+                            st.text(result['text'])
 
 if __name__ == "__main__":
     main()

@@ -1,6 +1,6 @@
-streamlit
-pandas
-numpy
-openpyxl
-qdrant-client
-sentence-transformers
+streamlit==1.31.0
+pandas==2.2.0
+numpy==1.26.3
+openpyxl==3.1.2
+qdrant-client==1.7.0
+sentence-transformers==2.2.2
