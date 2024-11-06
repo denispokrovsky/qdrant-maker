@@ -4,11 +4,27 @@ from pathlib import Path
 from datetime import datetime
 import hashlib
 from typing import List, Dict
-from qdrant_client import QdrantClient
-from qdrant_client.http import models
-from sentence_transformers import SentenceTransformer
 import pandas as pd
 
+# Display initial loading message
+st.set_page_config(page_title="News Clips Processor", layout="wide")
+st.title("News Clips Processor")
+
+# Try importing required packages with error handling
+try:
+    from qdrant_client import QdrantClient
+    from qdrant_client.http import models
+    from sentence_transformers import SentenceTransformer
+except ImportError as e:
+    st.error(f"""Error loading required packages. Please make sure all dependencies are installed:
+    ```
+    pip install -r requirements.txt
+    ```
+    Error details: {str(e)}
+    """)
+    st.stop()
+
+    
 # Initialize session state
 if 'processed_hashes' not in st.session_state:
     st.session_state.processed_hashes = set()
