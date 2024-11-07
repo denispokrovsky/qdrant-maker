@@ -531,11 +531,13 @@ class NewsProcessor:
             return 0
 
     def search_news(self, query: str, company: str = None, limit: int = 10) -> List[Dict]:
-        """Enhanced search using both vector similarity and fuzzy text matching"""
+        """Enhanced search with fixed company filtering"""
         try:
+            # Get more initial results to allow for filtering
             initial_limit = limit * 5
             query_vector = self.model.encode(query)
             
+            # Perform vector search
             vector_results = self.qdrant.search(
                 collection_name=self.collection_name,
                 query_vector=query_vector,
@@ -550,37 +552,43 @@ class NewsProcessor:
             processed_results = []
             
             for hit in vector_results:
+                # Skip metadata points
                 if hit.payload.get('is_metadata', False):
                     continue
                     
-                if company and company != "All Companies" and hit.payload.get('company') != company:
+                # Fix company filtering
+                if company and company != "Все компании" and hit.payload.get('company', '').strip() != company.strip():
                     continue
                 
                 text = hit.payload.get('text', '').lower()
                 query_lower = query.lower()
                 
+                # Calculate scores
                 vector_score = hit.score
                 fuzzy_ratio = fuzz.ratio(query_lower, text) / 100
                 partial_ratio = fuzz.partial_ratio(query_lower, text) / 100
                 token_sort_ratio = fuzz.token_sort_ratio(query_lower, text) / 100
                 contains_exact = query_lower in text
                 
+                # Adjust score weights for Russian text
                 combined_score = (
-                    vector_score * 0.4 +
-                    fuzzy_ratio * 0.2 +
-                    partial_ratio * 0.2 +
-                    token_sort_ratio * 0.2
+                    vector_score * 0.5 +       # Increased vector importance
+                    fuzzy_ratio * 0.15 +
+                    partial_ratio * 0.25 +     # Increased partial match importance
+                    token_sort_ratio * 0.1
                 )
                 
+                # Boost exact matches more significantly
                 if contains_exact:
-                    combined_score *= 1.2
+                    combined_score *= 1.3
                 
-                if combined_score > 0.3:
+                # Lower threshold for better recall
+                if combined_score > 0.2:  # Lowered threshold
                     processed_results.append({
-                        'company': hit.payload.get('company', 'Unknown'),
+                        'company': hit.payload.get('company', 'Неизвестно'),
                         'date': hit.payload.get('date', ''),
                         'text': hit.payload.get('text', ''),
-                        'source_file': hit.payload.get('source_file', 'Unknown'),
+                        'source_file': hit.payload.get('source_file', 'Неизвестно'),
                         'similarity': combined_score,
                         'vector_score': vector_score,
                         'fuzzy_score': fuzzy_ratio,
@@ -589,16 +597,20 @@ class NewsProcessor:
                         'has_exact_match': contains_exact
                     })
             
+            # Sort by combined score
             processed_results.sort(key=lambda x: x['similarity'], reverse=True)
+            
+            # Take top results
             final_results = processed_results[:limit]
             
             return final_results
             
         except Exception as e:
-            st.error(f"Search error: {str(e)}")
+            st.error(f"Ошибка поиска: {str(e)}")
             return []
+    
 def main():
-    st.title("📰 News Processor and Search")
+    st.title("📰обработка новостного массива для исследования фактов")
     
     # Initialize processor
     processor = NewsProcessor()
@@ -658,7 +670,7 @@ def main():
                 - Обновлено: {stats['last_updated']}
             """)
     with tab2:
-        st.header("Искать по новостям")
+        st.header("Поиск по новостям")
         
         try:
             # Get unique companies
@@ -678,9 +690,10 @@ def main():
                     
                 points, offset = scroll_result
                 
+                # Extract companies, clean them up
                 for point in points:
                     if point.payload and not point.payload.get('is_metadata'):
-                        company = point.payload.get('company')
+                        company = point.payload.get('company', '').strip()
                         if company:
                             companies.add(company)
                 
@@ -690,7 +703,7 @@ def main():
             companies = sorted(companies)
             
             if not companies:
-                st.warning("На нашел компаний")
+                st.warning("Компании не найдены в базе")
                 return
             
             # Search interface
@@ -698,28 +711,27 @@ def main():
             
             with col1:
                 search_query = st.text_input(
-                    "Search Query",
+                    "Поисковый запрос",
                     "",
-                    help="Введите ключевые слова"
+                    help="Введите ключевые слова для поиска"
                 )
             
             with col2:
                 selected_company = st.selectbox(
-                    "Фильтр по компаниям",
+                    "Компания",
                     ["Все компании"] + companies
                 )
             
             with col3:
                 num_results = st.number_input(
-                    "Макс. кол-во рез-тов",
+                    "Макс. результатов",
                     min_value=1,
                     max_value=50,
-                    value=5
+                    value=10
                 )
             
-            # Search button with unique key
-            if st.button("🔍 Search", key="search_button") and search_query:
-                with st.spinner("ищу..."):
+            if st.button("🔍 Искать", key="search_button") and search_query:
+                with st.spinner("Ищу..."):
                     results = processor.search_news(
                         search_query,
                         selected_company,
@@ -727,49 +739,36 @@ def main():
                     )
                     
                     if results:
-                        # Add search summary
-                        st.success(f"Нашел {len(results)} результатов по запросу")
+                        st.success(f"Найдено {len(results)} результатов")
                         
-                        # Create tabs for different views
-                        list_tab, detailed_tab = st.tabs(["Список", "Детально"])
-                        
-                        with list_tab:
-                            for i, result in enumerate(results, 1):
-                                score_color = "green" if result['similarity'] > 0.7 else "orange" if result['similarity'] > 0.5 else "red"
-                                st.markdown(f"""
-                                    #### {i}. {result['company']} 
-                                    **Date:** {result.get('date', 'No date')} | **Relevance:** :{score_color}[{result['similarity']:.2f}]
-                                    
-                                    {result['text'][:200]}... 
-                                    
-                                    ---
-                                """)
-                        
-                        with detailed_tab:
-                            for i, result in enumerate(results, 1):
-                                with st.expander(
-                                    f"📄 Result {i}: {result['company']} ({result.get('date', 'No date')}) - Relevance: {result['similarity']:.2f}"
-                                ):
-                                    st.markdown(f"**Company:** {result['company']}")
-                                    st.markdown(f"**Date:** {result.get('date', 'No date')}")
-                                    st.markdown(f"**Source File:** {result['source_file']}")
-                                    
-                                    if st.checkbox(f"Show debug info {i}", key=f"debug_{i}"):
-                                        st.write("Score Details:")
-                                        st.write(f"Vector Score: {result.get('vector_score', 0):.3f}")
-                                        st.write(f"Fuzzy Score: {result.get('fuzzy_score', 0):.3f}")
-                                        st.write(f"Partial Score: {result.get('partial_score', 0):.3f}")
-                                        st.write(f"Token Score: {result.get('token_score', 0):.3f}")
-                                        st.write(f"Exact Match: {result.get('has_exact_match', False)}")
-                                    
-                                    st.markdown("**Text:**")
+                        for i, result in enumerate(results, 1):
+                            with st.expander(
+                                f"📄 {i}. {result['company']} - {result.get('date', 'дата не указана')} (релевантность: {result['similarity']:.2f})"
+                            ):
+                                cols = st.columns([2, 1])
+                                with cols[0]:
+                                    st.markdown("**Текст:**")
                                     st.text(result['text'])
+                                
+                                with cols[1]:
+                                    st.markdown("**Детали:**")
+                                    st.write(f"Компания: {result['company']}")
+                                    st.write(f"Дата: {result.get('date', 'не указана')}")
+                                    st.write(f"Файл: {result['source_file']}")
+                                    
+                                    if st.checkbox(f"Показать метрики {i}", key=f"debug_{i}"):
+                                        st.write("Оценки:")
+                                        st.write(f"Векторная: {result.get('vector_score', 0):.3f}")
+                                        st.write(f"Нечеткая: {result.get('fuzzy_score', 0):.3f}")
+                                        st.write(f"Частичная: {result.get('partial_score', 0):.3f}")
+                                        st.write(f"Токены: {result.get('token_score', 0):.3f}")
+                                        st.write(f"Точное совпадение: {'Да' if result.get('has_exact_match', False) else 'Нет'}")
                     else:
-                        st.info("No results found.")
+                        st.info("Ничего не найдено")
                         
         except Exception as e:
-            st.error(f"Не могу соединиться с БД: {str(e)}")
-            st.info("БД надо правильно сконфигурировать, а сейчас неправильно сконфигурирована.")
+            st.error(f"Ошибка подключения к базе данных: {str(e)}")
+            st.info("Проверьте настройки подключения к базе данных.")
 
 if __name__ == "__main__":
     main()
