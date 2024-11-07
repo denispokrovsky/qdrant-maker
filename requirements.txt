@@ -1,7 +1,7 @@
 streamlit==1.31.1
 pandas==2.2.0
 numpy==1.26.3
-qdrant-client==1.7.0
+qdrant-client==1.6.4  # Changed to a stable version
 sentence-transformers==2.2.2
 rapidfuzz==3.6.1
 openpyxl==3.1.2
@@ -9,4 +9,4 @@ tqdm==4.66.1
 python-dotenv==1.0.1
 huggingface-hub==0.19.4
 transformers==4.35.2
-torch
+torch==2.1.0

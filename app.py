@@ -38,6 +38,7 @@ st.markdown("""
    
 class NewsProcessor:
     def __init__(self, collection_name: str = "company_news"):
+        # Initialize the embeddings model with error handling
         # Try to load the model with error handling and fallback
         try:
             self.model = SentenceTransformer('sergeyzh/LaBSE-ru-turbo') 
@@ -46,71 +47,87 @@ class NewsProcessor:
             try:
                 # Try a smaller, more stable model as fallback
                 self.model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-            except Exception as e:
-                st.error(f"Failed to load fallback model: {str(e)}")
-                st.error("Please check your internet connection and try again.")
-                st.stop()
-        
+
+        # Initialize Qdrant client with better error handling
         try:
             self.qdrant = QdrantClient(
                 url=st.secrets["QDRANT_URL"],
-                api_key=st.secrets["QDRANT_API_KEY"]
+                api_key=st.secrets["QDRANT_API_KEY"],
+                timeout=60  # Increase timeout
             )
-            # Create collection if it doesn't exist
-            if not self.qdrant.collection_exists(collection_name):
-                self.qdrant.create_collection(
-                    collection_name=collection_name,
-                    vectors_config=models.VectorParams(
-                        size=self.model.get_sentence_embedding_dimension(),
-                        distance=models.Distance.COSINE
-                    )
-                )
+            
+            try:
+                # Check if collection exists using list_collections()
+                collections = self.qdrant.get_collections()
+                collection_exists = any(col.name == collection_name for col in collections.collections)
                 
-                # Initialize collection metadata
-                self.qdrant.set_payload(
-                    collection_name=collection_name,
-                    payload={
-                        'total_news': 0,
-                        'processed_files': set(),
-                        'last_updated': datetime.now().isoformat()
-                    },
-                    points=[0]  # Metadata point
-                )
-            
-            self.collection_name = collection_name
-            
-            # Load existing hashes from the database
-            self.processed_hashes = self._load_existing_hashes()
-            
+                if not collection_exists:
+                    # Create new collection
+                    self.qdrant.create_collection(
+                        collection_name=collection_name,
+                        vectors_config=models.VectorParams(
+                            size=self.model.get_sentence_embedding_dimension(),
+                            distance=models.Distance.COSINE
+                        )
+                    )
+                    # Initialize metadata point
+                    self.qdrant.upsert(
+                        collection_name=collection_name,
+                        points=[
+                            models.PointStruct(
+                                id=0,
+                                vector=[0.0] * self.model.get_sentence_embedding_dimension(),
+                                payload={
+                                    'total_news': 0,
+                                    'processed_files': [],
+                                    'last_updated': datetime.now().isoformat()
+                                }
+                            )
+                        ]
+                    )
+                
+                self.collection_name = collection_name
+                self.processed_hashes = self._load_existing_hashes()
+                
+            except Exception as e:
+                st.error(f"Error setting up collection: {str(e)}")
+                st.stop()
+                
         except Exception as e:
-            st.error(f"Failed to connect to Qdrant Cloud: {str(e)}")
+            st.error(f"Error connecting to Qdrant: {str(e)}")
             st.stop()
 
     def _load_existing_hashes(self) -> Set[str]:
         """Load existing hashes from the database"""
         try:
-            # Scroll through all points to get hashes
             hashes = set()
             offset = None
-            limit = 100
-            
+            batch_size = 100
+
             while True:
-                scroll_response = self.qdrant.scroll(
+                # Get batch of points
+                response = self.qdrant.scroll(
                     collection_name=self.collection_name,
-                    with_payload=True,
-                    limit=limit,
-                    offset=offset
+                    limit=batch_size,
+                    offset=offset,
+                    with_payload=True
                 )
                 
-                records, offset = scroll_response
-                
-                if not records:
+                # Check if we got any points
+                if not response or not response[0]:
                     break
                     
-                for record in records:
-                    if 'hash' in record.payload:
-                        hashes.add(record.payload['hash'])
-            
+                points, offset = response
+                
+                # Extract hashes from points
+                for point in points:
+                    if point.payload and 'hash' in point.payload:
+                        hashes.add(point.payload['hash'])
+                
+                # If no offset returned, we've reached the end
+                if not offset:
+                    break
+
             return hashes
             
         except Exception as e:
@@ -120,21 +137,27 @@ class NewsProcessor:
     def get_collection_stats(self) -> Dict:
         """Get current collection statistics"""
         try:
+            # Get collection info
             collection_info = self.qdrant.get_collection(self.collection_name)
-            points_count = collection_info.points_count
             
-            # Get metadata
-            metadata = self.qdrant.retrieve(
+            # Get metadata point
+            metadata_points = self.qdrant.retrieve(
                 collection_name=self.collection_name,
                 ids=[0],
                 with_payload=True
-            )[0].payload
+            )
+            
+            if metadata_points and len(metadata_points) > 0:
+                metadata = metadata_points[0].payload
+            else:
+                metadata = {'processed_files': [], 'last_updated': 'Never'}
             
             return {
-                'total_points': points_count,
-                'processed_files': len(metadata.get('processed_files', set())),
+                'total_points': collection_info.vectors_count,
+                'processed_files': len(metadata.get('processed_files', [])),
                 'last_updated': metadata.get('last_updated', 'Never')
             }
+            
         except Exception as e:
             st.warning(f"Could not retrieve collection stats: {str(e)}")
             return {
