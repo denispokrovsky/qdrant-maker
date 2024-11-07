@@ -512,7 +512,8 @@ class NewsProcessor:
             results = self.qdrant.search(
                 collection_name=self.collection_name,
                 query_vector=query_vector,
-                limit=limit * 2  # Get more results initially to allow for filtering
+                limit=limit * 2,  # Get more results initially to allow for filtering
+                with_payload=True  # Make sure we get the payload
             )
             
             # Filter results in Python
@@ -523,13 +524,13 @@ class NewsProcessor:
                     continue
                     
                 # Apply company filter if specified
-                if company and company != "All Companies" and hit.payload['company'] != company:
+                if company and company != "All Companies" and hit.payload.get('company') != company:
                     continue
                     
                 filtered_results.append({
-                    'company': hit.payload['company'],
-                    'date': hit.payload['date'],
-                    'text': hit.payload['text'],
+                    'company': hit.payload.get('company', 'Unknown'),
+                    'date': hit.payload.get('date', ''),
+                    'text': hit.payload.get('text', ''),
                     'similarity': hit.score,
                     'source_file': hit.payload.get('source_file', 'Unknown')
                 })
@@ -603,19 +604,42 @@ def main():
                 - Total files processed: {stats['processed_files']}
                 - Last updated: {stats['last_updated']}
             """)
-    
     with tab2:
         st.header("Search News")
         
         try:
-            # Get unique companies
-            scroll_result = processor.qdrant.scroll(
-                collection_name=processor.collection_name,
-                with_payload=True,
-                limit=1000
-            )
-            records = scroll_result[0]
-            companies = sorted(set(record.payload["company"] for record in records))
+            # Get unique companies with better error handling
+            companies = set()
+            offset = None
+            
+            while True:
+                scroll_result = processor.qdrant.scroll(
+                    collection_name=processor.collection_name,
+                    limit=100,
+                    offset=offset,
+                    with_payload=True
+                )
+                
+                if not scroll_result or not scroll_result[0]:
+                    break
+                    
+                points, offset = scroll_result
+                
+                # Extract company names, skipping metadata points
+                for point in points:
+                    if point.payload and not point.payload.get('is_metadata'):
+                        company = point.payload.get('company')
+                        if company:
+                            companies.add(company)
+                
+                if not offset:
+                    break
+            
+            companies = sorted(companies)
+            
+            if not companies:
+                st.warning("No companies found in the database.")
+                return
             
             # Search interface
             col1, col2, col3 = st.columns([3, 1, 1])
@@ -664,7 +688,6 @@ def main():
                         
         except Exception as e:
             st.error(f"Error connecting to the database: {str(e)}")
-            st.info("Please make sure the database is properly configured.")
-
+            st.info("Please make sure the database is properly configured.")    
 if __name__ == "__main__":
     main()
