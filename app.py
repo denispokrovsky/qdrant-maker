@@ -52,51 +52,33 @@ class NewsProcessor:
                 st.error("Please check your internet connection and try again.")
                 st.stop()
 
-        # Initialize Qdrant client with better error handling
         try:
             self.qdrant = QdrantClient(
                 url=st.secrets["QDRANT_URL"],
                 api_key=st.secrets["QDRANT_API_KEY"],
-                timeout=60  # Increase timeout
+                timeout=60
             )
             
-            try:
-                # Check if collection exists using list_collections()
-                collections = self.qdrant.get_collections()
-                collection_exists = any(col.name == collection_name for col in collections.collections)
-                
-                if not collection_exists:
-                    # Create new collection
-                    self.qdrant.create_collection(
-                        collection_name=collection_name,
-                        vectors_config=models.VectorParams(
-                            size=self.model.get_sentence_embedding_dimension(),
-                            distance=models.Distance.COSINE
-                        )
+            # Check if collection exists
+            collections = self.qdrant.get_collections()
+            collection_exists = any(col.name == collection_name for col in collections.collections)
+            
+            if not collection_exists:
+                # Create collection with cloud-appropriate settings
+                self.qdrant.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=models.VectorParams(
+                        size=self.model.get_sentence_embedding_dimension(),
+                        distance=models.Distance.COSINE
                     )
-                    # Initialize metadata point
-                    self.qdrant.upsert(
-                        collection_name=collection_name,
-                        points=[
-                            models.PointStruct(
-                                id=0,
-                                vector=[0.0] * self.model.get_sentence_embedding_dimension(),
-                                payload={
-                                    'total_news': 0,
-                                    'processed_files': [],
-                                    'last_updated': datetime.now().isoformat()
-                                }
-                            )
-                        ]
-                    )
+                )
                 
-                self.collection_name = collection_name
-                self.processed_hashes = self._load_existing_hashes()
-                
-            except Exception as e:
-                st.error(f"Error setting up collection: {str(e)}")
-                st.stop()
-                
+                # Initialize metadata
+                self._initialize_metadata()
+            
+            self.collection_name = collection_name
+            self.processed_hashes = self._load_existing_hashes()
+            
         except Exception as e:
             st.error(f"Error connecting to Qdrant: {str(e)}")
             st.stop()
@@ -170,39 +152,27 @@ class NewsProcessor:
                 'last_updated': 'Never'
             }
 
-    def _update_metadata(self, file_name: str):
-        """Update collection metadata after processing a file"""
+    def _initialize_metadata(self):
+        """Initialize collection metadata"""
         try:
-            # Get current metadata
-            metadata = self.qdrant.retrieve(
+            self.qdrant.upsert(
                 collection_name=self.collection_name,
-                ids=[0],
-                with_payload=True
-            )[0].payload
-            
-            # Update metadata
-            processed_files = set(metadata.get('processed_files', set()))
-            processed_files.add(file_name)
-            
-            new_metadata = {
-                'total_news': len(self.processed_hashes),
-                'processed_files': list(processed_files),  # Convert to list for JSON serialization
-                'last_updated': datetime.now().isoformat()
-            }
-            
-            # Update metadata point
-            self.qdrant.set_payload(
-                collection_name=self.collection_name,
-                payload=new_metadata,
-                points=[0]
+                wait=True,  # Ensure metadata is written before continuing
+                points=[
+                    models.PointStruct(
+                        id=0,
+                        vector=[0.0] * self.model.get_sentence_embedding_dimension(),
+                        payload={
+                            'is_metadata': True,
+                            'total_news': 0,
+                            'processed_files': [],
+                            'last_updated': datetime.now().isoformat()
+                        }
+                    )
+                ]
             )
-            
         except Exception as e:
-            st.warning(f"Could not update metadata: {str(e)}")
-
-    def _hash_news(self, company: str, date: datetime, text: str) -> str:
-        content = f"{company}{date.isoformat()}{text}".encode('utf-8')
-        return hashlib.md5(content).hexdigest()
+            st.warning(f"Could not initialize metadata: {str(e)}")
 
     def fuzzy_deduplicate(self, df: pd.DataFrame, threshold: float) -> pd.DataFrame:
         with st.spinner("Deduplicating entries..."):
@@ -242,6 +212,7 @@ class NewsProcessor:
             return False
 
     def process_excel_file(self, file, similarity_threshold: float) -> int:
+        """Process a single Excel file"""
         # Check if file was already processed
         if self.is_file_processed(file.name):
             st.warning(f"File {file.name} was already processed. Skipping...")
@@ -256,14 +227,12 @@ class NewsProcessor:
                 header=0
             )
             
-            # Rename columns
+            # Basic data cleaning
             df.columns = ['company', 'date', 'text']
-            
-            # Clean data
             df = df.dropna(subset=['company', 'date', 'text'])
             df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y %H:%M', errors='coerce')
             
-            # Deduplicate
+            # Deduplicate within file
             original_count = len(df)
             df = self.fuzzy_deduplicate(df, similarity_threshold)
             deduped_count = len(df)
@@ -283,35 +252,44 @@ class NewsProcessor:
                 if news_hash in self.processed_hashes:
                     continue
                     
-                embedding = self.model.encode(row['text'])
-                
-                points.append(models.PointStruct(
-                    id=len(self.processed_hashes),
-                    vector=embedding.tolist(),
-                    payload={
-                        'company': row['company'],
-                        'date': row['date'].isoformat(),
-                        'text': row['text'],
-                        'source_file': file.name,
-                        'hash': news_hash
-                    }
-                ))
-                
-                self.processed_hashes.add(news_hash)
-                processed_count += 1
-                
-                if len(points) >= 100:
-                    self.qdrant.upsert(
-                        collection_name=self.collection_name,
-                        points=points
-                    )
-                    points = []
+                try:
+                    embedding = self.model.encode(row['text'])
+                    
+                    points.append(models.PointStruct(
+                        id=len(self.processed_hashes),
+                        vector=embedding.tolist(),
+                        payload={
+                            'company': row['company'],
+                            'date': row['date'].isoformat(),
+                            'text': row['text'],
+                            'source_file': file.name,
+                            'hash': news_hash
+                        }
+                    ))
+                    
+                    self.processed_hashes.add(news_hash)
+                    processed_count += 1
+                    
+                    # Batch insert every 20 points to avoid memory issues
+                    if len(points) >= 20:
+                        self.qdrant.upsert(
+                            collection_name=self.collection_name,
+                            wait=True,
+                            points=points
+                        )
+                        points = []
+                    
+                except Exception as e:
+                    st.warning(f"Error processing row {i}: {str(e)}")
+                    continue
                 
                 progress_bar.progress((i + 1) / len(df))
             
+            # Insert remaining points
             if points:
                 self.qdrant.upsert(
                     collection_name=self.collection_name,
+                    wait=True,
                     points=points
                 )
             
@@ -325,31 +303,53 @@ class NewsProcessor:
             return 0
 
     def search_news(self, query: str, company: str = None, limit: int = 10) -> List[Dict]:
-        query_vector = self.model.encode(query)
-        
-        filter_conditions = None
-        if company and company != "All Companies":
-            filter_conditions = models.Filter(
-                must=[models.FieldCondition(
-                    key="company",
-                    match=models.MatchValue(value=company)
-                )]
+        """Search news by text query and optionally filter by company"""
+        try:
+            query_vector = self.model.encode(query)
+            
+            filter_conditions = None
+            if company and company != "All Companies":
+                filter_conditions = models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="company",
+                            match=models.MatchValue(value=company)
+                        ),
+                        models.FieldCondition(
+                            key="is_metadata",
+                            match=models.MatchValue(value=True),
+                            is_negated=True
+                        )
+                    ]
+                )
+            else:
+                filter_conditions = models.Filter(
+                    must_not=[
+                        models.FieldCondition(
+                            key="is_metadata",
+                            match=models.MatchValue(value=True)
+                        )
+                    ]
+                )
+            
+            results = self.qdrant.search(
+                collection_name=self.collection_name,
+                query_vector=query_vector,
+                limit=limit,
+                query_filter=filter_conditions
             )
-        
-        results = self.qdrant.search(
-            collection_name=self.collection_name,
-            query_vector=query_vector,
-            limit=limit,
-            query_filter=filter_conditions
-        )
-        
-        return [{
-            'company': hit.payload['company'],
-            'date': hit.payload['date'],
-            'text': hit.payload['text'],
-            'similarity': hit.score,
-            'source_file': hit.payload.get('source_file', 'Unknown')
-        } for hit in results]
+            
+            return [{
+                'company': hit.payload['company'],
+                'date': hit.payload['date'],
+                'text': hit.payload['text'],
+                'similarity': hit.score,
+                'source_file': hit.payload.get('source_file', 'Unknown')
+            } for hit in results]
+            
+        except Exception as e:
+            st.error(f"Search error: {str(e)}")
+            return []
 
 def main():
     st.title("📰 News Processor and Search")
