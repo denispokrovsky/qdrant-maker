@@ -257,26 +257,60 @@ class NewsProcessor:
             st.warning(f"Could not initialize metadata: {str(e)}")
 
     def fuzzy_deduplicate(self, df: pd.DataFrame, threshold: float) -> pd.DataFrame:
+        """Deduplicate rows using fuzzy matching with safer index handling"""
         with st.spinner("Deduplicating entries..."):
+            # Reset index to ensure continuous integers
+            df = df.reset_index(drop=True)
+            
             seen_texts = []
             indices_to_keep = []
             
             progress_bar = st.progress(0)
             total_rows = len(df)
             
-            for i, row in enumerate(df.iterrows()):
-                text = str(row[1]['text'])
-                if pd.isna(text):
-                    indices_to_keep.append(row[0])
-                    continue
-                    
-                if not seen_texts or all(fuzz.ratio(text, seen) < threshold for seen in seen_texts):
-                    seen_texts.append(text)
-                    indices_to_keep.append(row[0])
-                
-                progress_bar.progress((i + 1) / total_rows)
+            # Debug information
+            st.write(f"Starting deduplication of {total_rows} rows")
             
-            return df.iloc[indices_to_keep]
+            try:
+                for idx, row in df.iterrows():
+                    try:
+                        # Safely get text value
+                        text = str(row.get('text', ''))
+                        
+                        # Handle empty or NaN text
+                        if pd.isna(text) or not text.strip():
+                            indices_to_keep.append(idx)
+                            continue
+                        
+                        # Check for fuzzy duplicates
+                        if not seen_texts or all(fuzz.ratio(text, seen) < threshold for seen in seen_texts):
+                            seen_texts.append(text)
+                            indices_to_keep.append(idx)
+                        
+                        # Update progress
+                        if idx % 10 == 0:  # Update every 10 rows to reduce overhead
+                            progress_bar.progress((idx + 1) / total_rows)
+                            
+                    except Exception as e:
+                        st.warning(f"Error processing row {idx}: {str(e)}")
+                        continue
+                
+                # Final progress update
+                progress_bar.progress(1.0)
+                
+                # Validate indices before using them
+                valid_indices = [idx for idx in indices_to_keep if idx < len(df)]
+                
+                # Debug information
+                st.write(f"Found {len(valid_indices)} unique rows after deduplication")
+                
+                # Return deduplicated dataframe
+                return df.loc[valid_indices].reset_index(drop=True)
+                
+            except Exception as e:
+                st.error(f"Error during deduplication: {str(e)}")
+                # Return original dataframe if deduplication fails
+                return df
 
     def is_file_processed(self, file_name: str) -> bool:
         """Check if a file has already been processed"""
