@@ -388,6 +388,7 @@ class NewsProcessor:
                     return 0
                 
                 # Deduplicate within file
+                st.write("starting deduplication")
                 original_count = len(df)
                 df = self.fuzzy_deduplicate(df, similarity_threshold)
                 deduped_count = len(df)
