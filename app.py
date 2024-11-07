@@ -386,42 +386,6 @@ class NewsProcessor:
                 # Show initial row count
                 initial_count = len(df)
                 st.info(f"Found {initial_count} rows in {file.name}")
-                
-                def parse_date(date_str):
-                    try:
-                        if pd.isna(date_str):
-                            return None  # Return None for empty dates
-                        
-                        # Clean the date string
-                        date_str = str(date_str).strip()
-                        if not date_str:
-                            return None
-                        
-                        # Try different date formats
-                        for fmt in [
-                            '%d.%m.%Y %H:%M:%S',
-                            '%d.%m.%Y %H:%M',
-                            '%d.%m.%Y'
-                        ]:
-                            try:
-                                return pd.to_datetime(date_str, format=fmt).strftime('%d.%m.%Y')
-                            except:
-                                continue
-                        
-                        # If no format works, return original string
-                        return None
-                        
-                    except:
-                        return None
-            
-
-                
-                
-                if df.empty:
-                    st.warning(f"No data found in {file.name}")
-                    return 0
-                
-                
 
 
                 # Show data preview
@@ -437,9 +401,9 @@ class NewsProcessor:
 
                 # Convert dates but keep invalid ones
                 
-                df['parsed_date'] = df['date'].astype(str).str.extract(r'(\d{2}\.\d{2}\.\d{4})')
-
-                #df['parsed_date'] = df['date'].apply(parse_date)
+                
+                df['parsed_date'] = df['date'].astype(str).str.extract(r'(\d{2}\.\d{2}\.\d{4})').apply(lambda x: pd.to_datetime(x, format='%d.%m.%Y') if pd.notna(x) else None)
+                
                 
                 # Count invalid dates
                 invalid_dates = df['parsed_date'].isna()
