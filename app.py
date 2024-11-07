@@ -35,50 +35,17 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Initialize session state
-if 'processed_files' not in st.session_state:
-    st.session_state.processed_files = 0
-if 'total_news' not in st.session_state:
-    st.session_state.total_news = 0
-
-# Sidebar
-with st.sidebar:
-    st.title("⚙️ Settings")
-    similarity_threshold = st.slider(
-        "Deduplication Similarity Threshold (%)",
-        min_value=50,
-        max_value=100,
-        value=65,
-        help="Higher values mean more strict deduplication"
-    )
-    
-    st.markdown("---")
-    st.markdown("""
-        ### Instructions
-        1. Upload Excel files in the Process tab
-        2. Wait for processing to complete
-        3. Switch to Search tab to find news
-        
-        ### File Requirements
-        Excel files should have:
-        - Sheet named 'Публикации'
-        - Company names in Column A
-        - Dates in Column D (DD.MM.YYYY HH:MM)
-        - News text in Column G
-    """)
-
 class NewsProcessor:
     def __init__(self, collection_name: str = "company_news"):
-        self.model = SentenceTransformer('sergeyzh/LaBSE-ru-turbo')
+        self.model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
         
-        # Initialize Qdrant client with cloud credentials
         try:
             self.qdrant = QdrantClient(
                 url=st.secrets["QDRANT_URL"],
                 api_key=st.secrets["QDRANT_API_KEY"]
             )
             
-            # Check if collection exists; create if not
+            # Create collection if it doesn't exist
             if not self.qdrant.collection_exists(collection_name):
                 self.qdrant.create_collection(
                     collection_name=collection_name,
@@ -87,12 +54,113 @@ class NewsProcessor:
                         distance=models.Distance.COSINE
                     )
                 )
+                
+                # Initialize collection metadata
+                self.qdrant.set_payload(
+                    collection_name=collection_name,
+                    payload={
+                        'total_news': 0,
+                        'processed_files': set(),
+                        'last_updated': datetime.now().isoformat()
+                    },
+                    points=[0]  # Metadata point
+                )
+            
             self.collection_name = collection_name
-            self.processed_hashes = set()
+            
+            # Load existing hashes from the database
+            self.processed_hashes = self._load_existing_hashes()
             
         except Exception as e:
             st.error(f"Failed to connect to Qdrant Cloud: {str(e)}")
             st.stop()
+
+    def _load_existing_hashes(self) -> Set[str]:
+        """Load existing hashes from the database"""
+        try:
+            # Scroll through all points to get hashes
+            hashes = set()
+            offset = None
+            limit = 100
+            
+            while True:
+                scroll_response = self.qdrant.scroll(
+                    collection_name=self.collection_name,
+                    with_payload=True,
+                    limit=limit,
+                    offset=offset
+                )
+                
+                records, offset = scroll_response
+                
+                if not records:
+                    break
+                    
+                for record in records:
+                    if 'hash' in record.payload:
+                        hashes.add(record.payload['hash'])
+            
+            return hashes
+            
+        except Exception as e:
+            st.warning(f"Could not load existing hashes: {str(e)}")
+            return set()
+
+    def get_collection_stats(self) -> Dict:
+        """Get current collection statistics"""
+        try:
+            collection_info = self.qdrant.get_collection(self.collection_name)
+            points_count = collection_info.points_count
+            
+            # Get metadata
+            metadata = self.qdrant.retrieve(
+                collection_name=self.collection_name,
+                ids=[0],
+                with_payload=True
+            )[0].payload
+            
+            return {
+                'total_points': points_count,
+                'processed_files': len(metadata.get('processed_files', set())),
+                'last_updated': metadata.get('last_updated', 'Never')
+            }
+        except Exception as e:
+            st.warning(f"Could not retrieve collection stats: {str(e)}")
+            return {
+                'total_points': 0,
+                'processed_files': 0,
+                'last_updated': 'Never'
+            }
+
+    def _update_metadata(self, file_name: str):
+        """Update collection metadata after processing a file"""
+        try:
+            # Get current metadata
+            metadata = self.qdrant.retrieve(
+                collection_name=self.collection_name,
+                ids=[0],
+                with_payload=True
+            )[0].payload
+            
+            # Update metadata
+            processed_files = set(metadata.get('processed_files', set()))
+            processed_files.add(file_name)
+            
+            new_metadata = {
+                'total_news': len(self.processed_hashes),
+                'processed_files': list(processed_files),  # Convert to list for JSON serialization
+                'last_updated': datetime.now().isoformat()
+            }
+            
+            # Update metadata point
+            self.qdrant.set_payload(
+                collection_name=self.collection_name,
+                payload=new_metadata,
+                points=[0]
+            )
+            
+        except Exception as e:
+            st.warning(f"Could not update metadata: {str(e)}")
 
     def _hash_news(self, company: str, date: datetime, text: str) -> str:
         content = f"{company}{date.isoformat()}{text}".encode('utf-8')
@@ -120,7 +188,27 @@ class NewsProcessor:
             
             return df.iloc[indices_to_keep]
 
+    def is_file_processed(self, file_name: str) -> bool:
+        """Check if a file has already been processed"""
+        try:
+            metadata = self.qdrant.retrieve(
+                collection_name=self.collection_name,
+                ids=[0],
+                with_payload=True
+            )[0].payload
+            
+            processed_files = set(metadata.get('processed_files', set()))
+            return file_name in processed_files
+            
+        except Exception:
+            return False
+
     def process_excel_file(self, file, similarity_threshold: float) -> int:
+        # Check if file was already processed
+        if self.is_file_processed(file.name):
+            st.warning(f"File {file.name} was already processed. Skipping...")
+            return 0
+            
         try:
             # Read Excel file
             df = pd.read_excel(
@@ -151,7 +239,7 @@ class NewsProcessor:
             progress_bar = st.progress(0)
             
             for i, row in enumerate(df.iterrows()):
-                row = row[1]  # Get the row data
+                row = row[1]
                 news_hash = self._hash_news(row['company'], row['date'], row['text'])
                 
                 if news_hash in self.processed_hashes:
@@ -189,6 +277,9 @@ class NewsProcessor:
                     points=points
                 )
             
+            # Update metadata after successful processing
+            self._update_metadata(file.name)
+            
             return processed_count
             
         except Exception as e:
@@ -218,11 +309,37 @@ class NewsProcessor:
             'company': hit.payload['company'],
             'date': hit.payload['date'],
             'text': hit.payload['text'],
-            'similarity': hit.score
+            'similarity': hit.score,
+            'source_file': hit.payload.get('source_file', 'Unknown')
         } for hit in results]
 
 def main():
     st.title("📰 News Processor and Search")
+    
+    # Initialize processor
+    processor = NewsProcessor()
+    
+    # Get current stats
+    stats = processor.get_collection_stats()
+    
+    # Display stats in sidebar
+    with st.sidebar:
+        st.title("⚙️ Settings & Stats")
+        
+        st.markdown("### Database Stats")
+        st.write(f"Total News Items: {stats['total_points']}")
+        st.write(f"Processed Files: {stats['processed_files']}")
+        st.write(f"Last Updated: {stats['last_updated']}")
+        
+        st.markdown("---")
+        
+        similarity_threshold = st.slider(
+            "Deduplication Similarity Threshold (%)",
+            min_value=50,
+            max_value=100,
+            value=65,
+            help="Higher values mean more strict deduplication"
+        )
     
     tab1, tab2 = st.tabs(["Process Files", "Search News"])
     
@@ -236,8 +353,6 @@ def main():
         )
         
         if uploaded_files:
-            processor = NewsProcessor()
-            
             with st.spinner("Processing files..."):
                 for file in uploaded_files:
                     st.subheader(f"Processing {file.name}")
@@ -247,21 +362,22 @@ def main():
                         similarity_threshold
                     )
                     
-                    st.session_state.processed_files += 1
-                    st.session_state.total_news += processed_count
+                    if processed_count > 0:
+                        st.success(f"Added {processed_count} new news items from {file.name}")
             
+            # Refresh stats after processing
+            stats = processor.get_collection_stats()
             st.success(f"""
                 Processing complete! 🎉
-                - Files processed: {st.session_state.processed_files}
-                - Total unique news items: {st.session_state.total_news}
+                - Total news items in database: {stats['total_points']}
+                - Total files processed: {stats['processed_files']}
+                - Last updated: {stats['last_updated']}
             """)
     
     with tab2:
         st.header("Search News")
         
         try:
-            processor = NewsProcessor()
-            
             # Get unique companies
             scroll_result = processor.qdrant.scroll(
                 collection_name=processor.collection_name,
@@ -310,6 +426,7 @@ def main():
                             ):
                                 st.markdown(f"**Company:** {result['company']}")
                                 st.markdown(f"**Date:** {result['date']}")
+                                st.markdown(f"**Source File:** {result['source_file']}")
                                 st.markdown("**Text:**")
                                 st.text(result['text'])
                     else:
