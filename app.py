@@ -119,31 +119,69 @@ class NewsProcessor:
         except Exception as e:
             st.warning(f"Could not load existing hashes: {str(e)}")
             return set()
-
     def get_collection_stats(self) -> Dict:
         """Get current collection statistics"""
         try:
-            # Get collection info
-            collection_info = self.qdrant.get_collection(self.collection_name)
-            
-            # Get metadata point
-            metadata_points = self.qdrant.retrieve(
-                collection_name=self.collection_name,
-                ids=[0],
-                with_payload=True
-            )
-            
-            if metadata_points and len(metadata_points) > 0:
-                metadata = metadata_points[0].payload
-            else:
+            # Count total points by scrolling through the collection
+            total_points = 0
+            offset = None
+            batch_size = 100
+
+            while True:
+                response = self.qdrant.scroll(
+                    collection_name=self.collection_name,
+                    limit=batch_size,
+                    offset=offset,
+                    with_payload=True,
+                    filter=models.Filter(
+                        must_not=[
+                            models.FieldCondition(
+                                key="is_metadata",
+                                match=models.MatchValue(value=True)
+                            )
+                        ]
+                    )
+                )
+                
+                if not response or not response[0]:
+                    break
+                    
+                points, offset = response
+                total_points += len(points)
+                
+                if not offset:
+                    break
+
+            # Get metadata for processed files and last update
+            try:
+                metadata_response = self.qdrant.scroll(
+                    collection_name=self.collection_name,
+                    limit=1,
+                    with_payload=True,
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="is_metadata",
+                                match=models.MatchValue(value=True)
+                            )
+                        ]
+                    )
+                )
+                
+                if metadata_response and metadata_response[0] and len(metadata_response[0]) > 0:
+                    metadata = metadata_response[0][0].payload
+                else:
+                    metadata = {'processed_files': [], 'last_updated': 'Never'}
+                    
+            except Exception:
                 metadata = {'processed_files': [], 'last_updated': 'Never'}
-            
+
             return {
-                'total_points': collection_info.vectors_count,
+                'total_points': total_points,
                 'processed_files': len(metadata.get('processed_files', [])),
                 'last_updated': metadata.get('last_updated', 'Never')
             }
-            
+                
         except Exception as e:
             st.warning(f"Could not retrieve collection stats: {str(e)}")
             return {
@@ -151,6 +189,58 @@ class NewsProcessor:
                 'processed_files': 0,
                 'last_updated': 'Never'
             }
+    def _update_metadata(self, file_name: str):
+    """Update collection metadata after processing a file"""
+        try:
+            # Get current metadata
+            metadata_response = self.qdrant.scroll(
+                collection_name=self.collection_name,
+                limit=1,
+                with_payload=True,
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="is_metadata",
+                            match=models.MatchValue(value=True)
+                        )
+                    ]
+                )
+            )
+            
+            if metadata_response and metadata_response[0] and len(metadata_response[0]) > 0:
+                current_metadata = metadata_response[0][0].payload
+                processed_files = set(current_metadata.get('processed_files', []))
+                metadata_id = metadata_response[0][0].id
+            else:
+                processed_files = set()
+                metadata_id = 0
+
+            # Update metadata
+            processed_files.add(file_name)
+            
+            new_metadata = {
+                'is_metadata': True,
+                'total_news': len(self.processed_hashes),
+                'processed_files': list(processed_files),
+                'last_updated': datetime.now().isoformat()
+            }
+            
+            # Update metadata point
+            self.qdrant.upsert(
+                collection_name=self.collection_name,
+                wait=True,
+                points=[
+                    models.PointStruct(
+                        id=metadata_id,
+                        vector=[0.0] * self.model.get_sentence_embedding_dimension(),
+                        payload=new_metadata
+                    )
+                ]
+            )
+            
+        except Exception as e:
+            st.warning(f"Could not update metadata: {str(e)}")
+
 
     def _initialize_metadata(self):
         """Initialize collection metadata"""
