@@ -401,10 +401,16 @@ class NewsProcessor:
 
                 # Convert dates but keep invalid ones
                 
-                #df['parsed_date'] = df['date'].astype(str).str.extract(r'(\d{2}\.\d{2}\.\d{4})')
-                df['parsed_date'] = df['date'].astype(str).str.extract(r'(\d{2}\.\d{2}\.\d{4})').apply(lambda x: pd.to_datetime(x, format='%d.%m.%Y') if pd.notna(x) else None)
+                df['parsed_date'] = df['date'].astype(str).str.extract(r'(\d{2}\.\d{2}\.\d{4})')
                 
-
+                st.write(df['parsed_date'].head(5))
+                
+                #df['parsed_date'] = df['date'].astype(str).str.extract(r'(\d{2}\.\d{2}\.\d{4})').apply(lambda x: pd.to_datetime(x, format='%d.%m.%Y') if pd.notna(x) else None)
+                
+                # Count invalid dates
+                invalid_dates = df['parsed_date'].isna()
+                if invalid_dates.any():
+                    st.info(f"Found {invalid_dates.sum()} rows with unparseable dates - these will be kept with empty date values")
                 
                 invalid_dates = df['date'].isna().sum()
                 if invalid_dates > 0:
