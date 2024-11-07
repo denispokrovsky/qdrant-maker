@@ -388,8 +388,73 @@ class NewsProcessor:
                     st.warning("No valid data remains after cleaning")
                     return 0
                 
-                # Rest of the processing remains the same...
-                [rest of your existing processing code]
+                # Deduplicate within file
+                original_count = len(df)
+                df = self.fuzzy_deduplicate(df, similarity_threshold)
+                deduped_count = len(df)
+                
+                st.info(f"Removed {original_count - deduped_count} duplicate entries from {file.name}")
+                
+                # Process entries
+                processed_count = 0
+                points = []
+                
+                progress_bar = st.progress(0)
+                
+                for i, row in enumerate(df.iterrows()):
+                    row = row[1]  # Get the row data
+                    
+                    try:
+                        news_hash = self._hash_news(row['company'], row['date'], row['text'])
+                        
+                        if news_hash in self.processed_hashes:
+                            continue
+                            
+                        embedding = self.model.encode(row['text'])
+                        
+                        points.append(models.PointStruct(
+                            id=len(self.processed_hashes),
+                            vector=embedding.tolist(),
+                            payload={
+                                'company': row['company'],
+                                'date': row['date'].isoformat(),
+                                'text': row['text'],
+                                'source_file': file.name,
+                                'hash': news_hash
+                            }
+                        ))
+                        
+                        self.processed_hashes.add(news_hash)
+                        processed_count += 1
+                        
+                        # Batch insert
+                        if len(points) >= 20:
+                            self.qdrant.upsert(
+                                collection_name=self.collection_name,
+                                wait=True,
+                                points=points
+                            )
+                            points = []
+                            
+                    except Exception as e:
+                        st.warning(f"Error processing row {i + 1}: {str(e)}")
+                        continue
+                    
+                    progress_bar.progress((i + 1) / len(df))
+                
+                # Insert remaining points
+                if points:
+                    self.qdrant.upsert(
+                        collection_name=self.collection_name,
+                        wait=True,
+                        points=points
+                    )
+                
+                # Update metadata if we processed any points
+                if processed_count > 0:
+                    self._update_metadata(file.name)
+                
+                return processed_count
 
             except Exception as e:
                 st.error(f"Error reading Excel data: {str(e)}")
