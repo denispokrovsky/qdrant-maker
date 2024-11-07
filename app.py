@@ -331,25 +331,20 @@ class NewsProcessor:
                 st.error(f"Error reading {file.name}: {str(e)}")
                 return 0
 
-            # Read all columns first to check the structure
+            # Read Excel file - simpler approach
             try:
-                df_all = pd.read_excel(
+                df = pd.read_excel(
                     file,
                     sheet_name='Публикации',
-                    header=None  # Read without header to get all rows
+                    usecols=[0, 3, 6],  # Using column indices instead of letters
+                    names=['company', 'date', 'text'],  # Assign column names directly
+                    dtype=str  # Read everything as string initially
                 )
                 
-                # Check if we have enough columns
-                if df_all.shape[1] < 7:
-                    st.error(f"File {file.name} doesn't have enough columns. Found {df_all.shape[1]}, need at least 7")
-                    return 0
-                
-                # Now read only the columns we need
-                df = pd.DataFrame({
-                    'company': df_all.iloc[:, 0],  # Column A (index 0)
-                    'date': df_all.iloc[:, 3],     # Column D (index 3)
-                    'text': df_all.iloc[:, 6]      # Column G (index 6)
-                })
+                # Debug info
+                st.write("File structure:")
+                st.write(f"Columns: {df.columns.tolist()}")
+                st.write(f"Total rows before cleaning: {len(df)}")
                 
                 # Remove rows where all values are NaN (empty rows)
                 df = df.dropna(how='all')
@@ -363,7 +358,7 @@ class NewsProcessor:
                     return 0
                 
                 # Show data preview
-                st.write("Preview of the first few rows:")
+                st.write("Preview of raw data:")
                 st.write(df.head())
                 
                 # Clean data: remove rows where any required column is empty
@@ -374,6 +369,10 @@ class NewsProcessor:
                 
                 # Convert dates with error handling
                 try:
+                    # First, clean the date strings
+                    df['date'] = df['date'].astype(str).str.strip()
+                    st.write("Date format examples:", df['date'].head())
+                    
                     df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y %H:%M', errors='coerce')
                     invalid_dates = df['date'].isna().sum()
                     df = df.dropna(subset=['date'])
@@ -381,7 +380,7 @@ class NewsProcessor:
                         st.warning(f"Found {invalid_dates} rows with invalid dates, they will be skipped")
                 except Exception as e:
                     st.error(f"Error converting dates: {str(e)}")
-                    st.write("Date column preview:", df['date'].head())
+                    st.write("Date examples causing problems:", df['date'].head())
                     return 0
                 
                 if df.empty:
@@ -455,9 +454,12 @@ class NewsProcessor:
                     self._update_metadata(file.name)
                 
                 return processed_count
-
+                
             except Exception as e:
                 st.error(f"Error reading Excel data: {str(e)}")
+                # Add more debug information
+                st.write("Trying to read file:", file.name)
+                st.write("Available sheets:", xls.sheet_names)
                 return 0
                 
         except Exception as e:
