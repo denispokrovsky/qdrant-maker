@@ -404,11 +404,12 @@ class NewsProcessor:
                 #df['parsed_date'] = df['date'].astype(str).str.extract(r'(\d{2}\.\d{2}\.\d{4})')
                 df['parsed_date'] = df['date'].astype(str).str.extract(r'(\d{2}\.\d{2}\.\d{4})').apply(lambda x: pd.to_datetime(x, format='%d.%m.%Y') if pd.notna(x) else None)
                 
-                # Count invalid dates
-                invalid_dates = df['parsed_date'].isna()
-                if invalid_dates.any():
-                    st.info(f"Found {invalid_dates.sum()} rows with unparseable dates - these will be kept with empty date values")
+
                 
+                invalid_dates = df['date'].isna().sum()
+                if invalid_dates > 0:
+                    st.info(f"Found {invalid_dates} rows with unparseable dates - these will be kept with empty date values")
+
                 # Deduplicate within file
                 st.write("starting deduplication")
                 original_count = len(df)
