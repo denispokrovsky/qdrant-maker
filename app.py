@@ -437,7 +437,7 @@ class NewsProcessor:
 
                 # Convert dates but keep invalid ones
                 
-                df['parsed_date'] = df['date'].str.extract(r'(\d{2}\.\d{2}\.\d{4})')
+                df['parsed_date'] = df['date'].astype(str).str.extract(r'(\d{2}\.\d{2}\.\d{4})')
 
                 #df['parsed_date'] = df['date'].apply(parse_date)
                 
@@ -480,7 +480,7 @@ class NewsProcessor:
                             vector=embedding.tolist(),
                             payload={
                                 'company': row['company'],
-                                'date': date_value,
+                                'date': row['parsed_date'],
                                 'text': row['text'],
                                 'source_file': file.name,
                                 'hash': news_hash
