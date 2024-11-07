@@ -375,7 +375,7 @@ class NewsProcessor:
                     
                     df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y %H:%M:%S', errors='coerce')
                     #invalid_dates = df['date'].isna().sum()
-                    df = df.dropna(subset=['date'])
+                    #df = df.dropna(subset=['date'])
                     #if invalid_dates > 0:
                         #st.warning(f"Found {invalid_dates} rows with invalid dates, they will be skipped")
                 except Exception as e:
