@@ -390,7 +390,9 @@ class NewsProcessor:
                 # Deduplicate within file
                 st.write("starting deduplication")
                 original_count = len(df)
+                st.write(f"original_count {original_count}")
                 df = self.fuzzy_deduplicate(df, similarity_threshold)
+                st.write(f"success dedup")
                 deduped_count = len(df)
                 
                 st.info(f"Removed {original_count - deduped_count} duplicate entries from {file.name}")
