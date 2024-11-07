@@ -715,7 +715,7 @@ def main():
                                 with cols[1]:
                                     st.markdown("**Детали:**")
                                     st.write(f"Компания: {result['company']}")
-                                    st.write(f"Дата: {result.get('date', 'не указана')}")
+                                    st.write(f"Дата: {result['date']}")
                                     st.write(f"Файл: {result['source_file']}")
                                     
                                     if st.checkbox(f"Показать метрики {i}", key=f"debug_{i}"):
