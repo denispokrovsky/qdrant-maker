@@ -174,18 +174,6 @@ class NewsProcessor:
                 'last_updated': 'Never'
             }
 
-    # Then in main(), update the sidebar display:
-    with st.sidebar:
-        st.title("⚙️ Статистика. Настройки.")
-        
-        st.markdown("### Статистика БД")
-        st.write(f"всего новостей: {stats['total_points']}")
-        st.write(f"файлов обработано: {stats['processed_files']}")
-        st.write(f"Размер базы: {stats['size_mb']} MB")
-        st.write(f"Обновлено: {stats['last_updated']}")
-        
-        st.markdown("---")
-
 
     def _update_metadata(self, file_name: str):
         """Update collection metadata after processing a file"""
@@ -606,13 +594,14 @@ def main():
     
     # Display stats in sidebar
     with st.sidebar:
-        st.title("⚙️ Статистика & Настройки")
+        st.title("⚙️ Статистика. Настройки.")
         
         st.markdown("### Статистика БД")
         st.write(f"всего новостей: {stats['total_points']}")
         st.write(f"файлов обработано: {stats['processed_files']}")
+        st.write(f"Размер базы: {stats['size_mb']} MB")
         st.write(f"Обновлено: {stats['last_updated']}")
-        
+
         st.markdown("---")
         
         similarity_threshold = st.slider(
