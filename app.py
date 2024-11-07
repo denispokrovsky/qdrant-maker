@@ -190,7 +190,7 @@ class NewsProcessor:
                 'last_updated': 'Never'
             }
     def _update_metadata(self, file_name: str):
-    """Update collection metadata after processing a file"""
+        """Update collection metadata after processing a file"""
         try:
             # Get current metadata
             metadata_response = self.qdrant.scroll(
