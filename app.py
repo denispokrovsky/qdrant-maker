@@ -336,7 +336,7 @@ class NewsProcessor:
                 df = pd.read_excel(
                     file,
                     sheet_name='Публикации',
-                    usecols=[0, 3, 6],  # Using column indices instead of letters
+                    usecols="A, D, G",  # Using column indices instead of letters
                     names=['company', 'date', 'text'],  # Assign column names directly
                     dtype=str  # Read everything as string initially
                 )
@@ -373,11 +373,11 @@ class NewsProcessor:
                     df['date'] = df['date'].astype(str).str.strip()
                     st.write("Date format examples:", df['date'].head())
                     
-                    df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y %H:%M', errors='coerce')
-                    invalid_dates = df['date'].isna().sum()
+                    df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y %H:%M:%S', errors='coerce')
+                    #invalid_dates = df['date'].isna().sum()
                     df = df.dropna(subset=['date'])
-                    if invalid_dates > 0:
-                        st.warning(f"Found {invalid_dates} rows with invalid dates, they will be skipped")
+                    #if invalid_dates > 0:
+                        #st.warning(f"Found {invalid_dates} rows with invalid dates, they will be skipped")
                 except Exception as e:
                     st.error(f"Error converting dates: {str(e)}")
                     st.write("Date examples causing problems:", df['date'].head())
