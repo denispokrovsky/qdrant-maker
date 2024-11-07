@@ -35,16 +35,27 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+   
 class NewsProcessor:
     def __init__(self, collection_name: str = "company_news"):
-        self.model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+        # Try to load the model with error handling and fallback
+        try:
+            self.model = SentenceTransformer('sergeyzh/LaBSE-ru-turbo') 
+        except Exception as e:
+            st.warning(f"Failed to load primary model: {str(e)}. Trying fallback model...")
+            try:
+                # Try a smaller, more stable model as fallback
+                self.model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+            except Exception as e:
+                st.error(f"Failed to load fallback model: {str(e)}")
+                st.error("Please check your internet connection and try again.")
+                st.stop()
         
         try:
             self.qdrant = QdrantClient(
                 url=st.secrets["QDRANT_URL"],
                 api_key=st.secrets["QDRANT_API_KEY"]
-            )
-            
+
             # Create collection if it doesn't exist
             if not self.qdrant.collection_exists(collection_name):
                 self.qdrant.create_collection(
