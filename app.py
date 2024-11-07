@@ -387,39 +387,61 @@ class NewsProcessor:
                 initial_count = len(df)
                 st.info(f"Found {initial_count} rows in {file.name}")
                 
+                def parse_date(date_str):
+                    try:
+                        if pd.isna(date_str):
+                            return None  # Return None for empty dates
+                        
+                        # Clean the date string
+                        date_str = str(date_str).strip()
+                        if not date_str:
+                            return None
+                        
+                        # Try different date formats
+                        for fmt in [
+                            '%d.%m.%Y %H:%M:%S',
+                            '%d.%m.%Y %H:%M',
+                            '%d.%m.%Y'
+                        ]:
+                            try:
+                                return pd.to_datetime(date_str, format=fmt).strftime('%d.%m.%Y')
+                            except:
+                                continue
+                        
+                        # If no format works, return original string
+                        return None
+                        
+                    except:
+                        return None
+            
+
+                
+                
                 if df.empty:
                     st.warning(f"No data found in {file.name}")
                     return 0
                 
+                
+
+
                 # Show data preview
                 st.write("Preview of raw data:")
                 st.write(df.head())
                 
                 # Clean data: remove rows where any required column is empty
-                df = df.dropna(subset=['company', 'date', 'text'])
+                df = df.dropna(subset=['company', 'text'])
                 after_cleaning_count = len(df)
                 if after_cleaning_count < initial_count:
                     st.info(f"Removed {initial_count - after_cleaning_count} rows with missing data")
                 
-                # Convert dates with error handling
-                try:
-                    # First, clean the date strings
-                    df['date'] = df['date'].astype(str).str.strip()
-                    st.write("Date format examples:", df['date'].head())
-                    
-                    df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y %H:%M:%S', errors='coerce')
-                    #invalid_dates = df['date'].isna().sum()
-                    #df = df.dropna(subset=['date'])
-                    #if invalid_dates > 0:
-                        #st.warning(f"Found {invalid_dates} rows with invalid dates, they will be skipped")
-                except Exception as e:
-                    st.error(f"Error converting dates: {str(e)}")
-                    st.write("Date examples causing problems:", df['date'].head())
-                    return 0
+
+                # Convert dates but keep invalid ones
+                df['parsed_date'] = df['date'].apply(parse_date)
                 
-                if df.empty:
-                    st.warning("No valid data remains after cleaning")
-                    return 0
+                # Count invalid dates
+                invalid_dates = df['parsed_date'].isna()
+                if invalid_dates.any():
+                    st.info(f"Found {invalid_dates.sum()} rows with unparseable dates - these will be kept with empty date values")
                 
                 # Deduplicate within file
                 st.write("starting deduplication")
@@ -441,7 +463,9 @@ class NewsProcessor:
                     row = row[1]  # Get the row data
                     
                     try:
-                        news_hash = self._hash_news(row['company'], row['date'], row['text'])
+                        date_value = row['parsed_date'] if pd.notna(row['parsed_date']) else ''
+                        
+                        news_hash = self._hash_news(row['company'], date_value, row['text'])
                         
                         if news_hash in self.processed_hashes:
                             continue
@@ -453,7 +477,7 @@ class NewsProcessor:
                             vector=embedding.tolist(),
                             payload={
                                 'company': row['company'],
-                                'date': row['date'].isoformat(),
+                                'date': date_value,
                                 'text': row['text'],
                                 'source_file': file.name,
                                 'hash': news_hash
@@ -504,45 +528,155 @@ class NewsProcessor:
             return 0
 
     def search_news(self, query: str, company: str = None, limit: int = 10) -> List[Dict]:
-        """Search news by text query and optionally filter by company"""
+        """Enhanced search using both vector similarity and fuzzy text matching"""
         try:
+            # Get more initial results to allow for fuzzy filtering
+            initial_limit = limit * 5
+            
+            # Encode query for vector search
             query_vector = self.model.encode(query)
             
-            # Search all points
-            results = self.qdrant.search(
+            # Vector search
+            vector_results = self.qdrant.search(
                 collection_name=self.collection_name,
                 query_vector=query_vector,
-                limit=limit * 2,  # Get more results initially to allow for filtering
-                with_payload=True  # Make sure we get the payload
+                limit=initial_limit,
+                with_payload=True,
+                search_params=models.SearchParams(
+                    hnsw_ef=128,  # Increase search accuracy
+                    exact=False   # Use approximate search for speed
+                )
             )
             
-            # Filter results in Python
-            filtered_results = []
-            for hit in results:
+            # Process and score results
+            processed_results = []
+            
+            for hit in vector_results:
                 # Skip metadata points
                 if hit.payload.get('is_metadata', False):
                     continue
                     
-                # Apply company filter if specified
+                # Skip if company filter is applied and doesn't match
                 if company and company != "All Companies" and hit.payload.get('company') != company:
                     continue
-                    
-                filtered_results.append({
-                    'company': hit.payload.get('company', 'Unknown'),
-                    'date': hit.payload.get('date', ''),
-                    'text': hit.payload.get('text', ''),
-                    'similarity': hit.score,
-                    'source_file': hit.payload.get('source_file', 'Unknown')
-                })
                 
-                if len(filtered_results) >= limit:
-                    break
+                text = hit.payload.get('text', '').lower()
+                query_lower = query.lower()
+                
+                # Calculate various similarity scores
+                vector_score = hit.score
+                
+                # Fuzzy text matching scores
+                fuzzy_ratio = fuzz.ratio(query_lower, text) / 100
+                partial_ratio = fuzz.partial_ratio(query_lower, text) / 100
+                token_sort_ratio = fuzz.token_sort_ratio(query_lower, text) / 100
+                
+                # Check for exact matches in text
+                contains_exact = query_lower in text
+                
+                # Combined score calculation
+                # Adjust weights based on your preferences
+                combined_score = (
+                    vector_score * 0.4 +      # Vector similarity
+                    fuzzy_ratio * 0.2 +       # Overall fuzzy similarity
+                    partial_ratio * 0.2 +     # Partial string matching
+                    token_sort_ratio * 0.2    # Word order invariant matching
+                )
+                
+                # Boost score for exact matches
+                if contains_exact:
+                    combined_score *= 1.2
+                
+                # Add to results if score is above threshold
+                if combined_score > 0.3:  # Adjust threshold as needed
+                    processed_results.append({
+                        'company': hit.payload.get('company', 'Unknown'),
+                        'date': hit.payload.get('date', ''),
+                        'text': hit.payload.get('text', ''),
+                        'source_file': hit.payload.get('source_file', 'Unknown'),
+                        'similarity': combined_score,
+                        'vector_score': vector_score,
+                        'fuzzy_score': fuzzy_ratio,
+                        'partial_score': partial_ratio,
+                        'token_score': token_sort_ratio,
+                        'has_exact_match': contains_exact
+                    })
             
-            return filtered_results
+            # Sort by combined score
+            processed_results.sort(key=lambda x: x['similarity'], reverse=True)
+            
+            # Take top results
+            final_results = processed_results[:limit]
+            
+            # Add debug information
+            if st.checkbox("Show search debug info"):
+                st.write("Search Debug Information:")
+                st.write(f"Query: '{query}'")
+                st.write(f"Total results before filtering: {len(vector_results)}")
+                st.write(f"Results after filtering: {len(processed_results)}")
+                for i, result in enumerate(final_results, 1):
+                    st.write(f"\nResult {i} Scores:")
+                    st.write(f"Combined Score: {result['similarity']:.3f}")
+                    st.write(f"Vector Score: {result['vector_score']:.3f}")
+                    st.write(f"Fuzzy Score: {result['fuzzy_score']:.3f}")
+                    st.write(f"Partial Score: {result['partial_score']:.3f}")
+                    st.write(f"Token Score: {result['token_score']:.3f}")
+                    st.write(f"Exact Match: {result['has_exact_match']}")
+            
+            # Clean up results for display
+            return [{
+                'company': r['company'],
+                'date': r['date'],
+                'text': r['text'],
+                'similarity': r['similarity'],
+                'source_file': r['source_file']
+            } for r in final_results]
             
         except Exception as e:
             st.error(f"Search error: {str(e)}")
             return []
+
+    # Update the search display in main():
+    if st.button("🔍 Search", type="primary") and search_query:
+        with st.spinner("Searching..."):
+            results = processor.search_news(
+                search_query,
+                selected_company,
+                num_results
+            )
+            
+            if results:
+                # Add search summary
+                st.success(f"Found {len(results)} results matching your query")
+                
+                # Create tabs for different views
+                list_tab, detailed_tab = st.tabs(["List View", "Detailed View"])
+                
+                with list_tab:
+                    for i, result in enumerate(results, 1):
+                        score_color = "green" if result['similarity'] > 0.7 else "orange" if result['similarity'] > 0.5 else "red"
+                        st.markdown(f"""
+                            #### {i}. {result['company']} 
+                            **Date:** {result['date'][:10]} | **Relevance:** :{score_color}[{result['similarity']:.2f}]
+                            
+                            {result['text'][:200]}... 
+                            
+                            ---
+                        """)
+                
+                with detailed_tab:
+                    for i, result in enumerate(results, 1):
+                        with st.expander(
+                            f"📄 Result {i}: {result['company']} ({result['date'][:10]}) - Relevance: {result['similarity']:.2f}"
+                        ):
+                            st.markdown(f"**Company:** {result['company']}")
+                            st.markdown(f"**Date:** {result['date']}")
+                            st.markdown(f"**Source File:** {result['source_file']}")
+                            st.markdown(f"**Relevance Score:** {result['similarity']:.3f}")
+                            st.markdown("**Full Text:**")
+                            st.text(result['text'])
+            else:
+                st.info("No results found.")
 
 def main():
     st.title("📰 News Processor and Search")
