@@ -530,65 +530,49 @@ class NewsProcessor:
     def search_news(self, query: str, company: str = None, limit: int = 10) -> List[Dict]:
         """Enhanced search using both vector similarity and fuzzy text matching"""
         try:
-            # Get more initial results to allow for fuzzy filtering
             initial_limit = limit * 5
-            
-            # Encode query for vector search
             query_vector = self.model.encode(query)
             
-            # Vector search
             vector_results = self.qdrant.search(
                 collection_name=self.collection_name,
                 query_vector=query_vector,
                 limit=initial_limit,
                 with_payload=True,
                 search_params=models.SearchParams(
-                    hnsw_ef=128,  # Increase search accuracy
-                    exact=False   # Use approximate search for speed
+                    hnsw_ef=128,
+                    exact=False
                 )
             )
             
-            # Process and score results
             processed_results = []
             
             for hit in vector_results:
-                # Skip metadata points
                 if hit.payload.get('is_metadata', False):
                     continue
                     
-                # Skip if company filter is applied and doesn't match
                 if company and company != "All Companies" and hit.payload.get('company') != company:
                     continue
                 
                 text = hit.payload.get('text', '').lower()
                 query_lower = query.lower()
                 
-                # Calculate various similarity scores
                 vector_score = hit.score
-                
-                # Fuzzy text matching scores
                 fuzzy_ratio = fuzz.ratio(query_lower, text) / 100
                 partial_ratio = fuzz.partial_ratio(query_lower, text) / 100
                 token_sort_ratio = fuzz.token_sort_ratio(query_lower, text) / 100
-                
-                # Check for exact matches in text
                 contains_exact = query_lower in text
                 
-                # Combined score calculation
-                # Adjust weights based on your preferences
                 combined_score = (
-                    vector_score * 0.4 +      # Vector similarity
-                    fuzzy_ratio * 0.2 +       # Overall fuzzy similarity
-                    partial_ratio * 0.2 +     # Partial string matching
-                    token_sort_ratio * 0.2    # Word order invariant matching
+                    vector_score * 0.4 +
+                    fuzzy_ratio * 0.2 +
+                    partial_ratio * 0.2 +
+                    token_sort_ratio * 0.2
                 )
                 
-                # Boost score for exact matches
                 if contains_exact:
                     combined_score *= 1.2
                 
-                # Add to results if score is above threshold
-                if combined_score > 0.3:  # Adjust threshold as needed
+                if combined_score > 0.3:
                     processed_results.append({
                         'company': hit.payload.get('company', 'Unknown'),
                         'date': hit.payload.get('date', ''),
@@ -602,82 +586,14 @@ class NewsProcessor:
                         'has_exact_match': contains_exact
                     })
             
-            # Sort by combined score
             processed_results.sort(key=lambda x: x['similarity'], reverse=True)
-            
-            # Take top results
             final_results = processed_results[:limit]
             
-            # Add debug information
-            if st.checkbox("Show search debug info"):
-                st.write("Search Debug Information:")
-                st.write(f"Query: '{query}'")
-                st.write(f"Total results before filtering: {len(vector_results)}")
-                st.write(f"Results after filtering: {len(processed_results)}")
-                for i, result in enumerate(final_results, 1):
-                    st.write(f"\nResult {i} Scores:")
-                    st.write(f"Combined Score: {result['similarity']:.3f}")
-                    st.write(f"Vector Score: {result['vector_score']:.3f}")
-                    st.write(f"Fuzzy Score: {result['fuzzy_score']:.3f}")
-                    st.write(f"Partial Score: {result['partial_score']:.3f}")
-                    st.write(f"Token Score: {result['token_score']:.3f}")
-                    st.write(f"Exact Match: {result['has_exact_match']}")
-            
-            # Clean up results for display
-            return [{
-                'company': r['company'],
-                'date': r['date'],
-                'text': r['text'],
-                'similarity': r['similarity'],
-                'source_file': r['source_file']
-            } for r in final_results]
+            return final_results
             
         except Exception as e:
             st.error(f"Search error: {str(e)}")
             return []
-
-    # Update the search display in main():
-    if st.button("🔍 Search", type="primary") and search_query:
-        with st.spinner("Searching..."):
-            results = processor.search_news(
-                search_query,
-                selected_company,
-                num_results
-            )
-            
-            if results:
-                # Add search summary
-                st.success(f"Found {len(results)} results matching your query")
-                
-                # Create tabs for different views
-                list_tab, detailed_tab = st.tabs(["List View", "Detailed View"])
-                
-                with list_tab:
-                    for i, result in enumerate(results, 1):
-                        score_color = "green" if result['similarity'] > 0.7 else "orange" if result['similarity'] > 0.5 else "red"
-                        st.markdown(f"""
-                            #### {i}. {result['company']} 
-                            **Date:** {result['date'][:10]} | **Relevance:** :{score_color}[{result['similarity']:.2f}]
-                            
-                            {result['text'][:200]}... 
-                            
-                            ---
-                        """)
-                
-                with detailed_tab:
-                    for i, result in enumerate(results, 1):
-                        with st.expander(
-                            f"📄 Result {i}: {result['company']} ({result['date'][:10]}) - Relevance: {result['similarity']:.2f}"
-                        ):
-                            st.markdown(f"**Company:** {result['company']}")
-                            st.markdown(f"**Date:** {result['date']}")
-                            st.markdown(f"**Source File:** {result['source_file']}")
-                            st.markdown(f"**Relevance Score:** {result['similarity']:.3f}")
-                            st.markdown("**Full Text:**")
-                            st.text(result['text'])
-            else:
-                st.info("No results found.")
-
 def main():
     st.title("📰 News Processor and Search")
     
@@ -742,7 +658,7 @@ def main():
         st.header("Search News")
         
         try:
-            # Get unique companies with better error handling
+            # Get unique companies
             companies = set()
             offset = None
             
@@ -759,7 +675,6 @@ def main():
                     
                 points, offset = scroll_result
                 
-                # Extract company names, skipping metadata points
                 for point in points:
                     if point.payload and not point.payload.get('is_metadata'):
                         company = point.payload.get('company')
@@ -799,7 +714,8 @@ def main():
                     value=5
                 )
             
-            if st.button("🔍 Search", type="primary") and search_query:
+            # Search button with unique key
+            if st.button("🔍 Search", key="search_button") and search_query:
                 with st.spinner("Searching..."):
                     results = processor.search_news(
                         search_query,
@@ -808,20 +724,49 @@ def main():
                     )
                     
                     if results:
-                        for i, result in enumerate(results, 1):
-                            with st.expander(
-                                f"📄 Result {i}: {result['company']} ({result['date'][:10]}) - Relevance: {result['similarity']:.2f}"
-                            ):
-                                st.markdown(f"**Company:** {result['company']}")
-                                st.markdown(f"**Date:** {result['date']}")
-                                st.markdown(f"**Source File:** {result['source_file']}")
-                                st.markdown("**Text:**")
-                                st.text(result['text'])
+                        # Add search summary
+                        st.success(f"Found {len(results)} results matching your query")
+                        
+                        # Create tabs for different views
+                        list_tab, detailed_tab = st.tabs(["List View", "Detailed View"])
+                        
+                        with list_tab:
+                            for i, result in enumerate(results, 1):
+                                score_color = "green" if result['similarity'] > 0.7 else "orange" if result['similarity'] > 0.5 else "red"
+                                st.markdown(f"""
+                                    #### {i}. {result['company']} 
+                                    **Date:** {result.get('date', 'No date')} | **Relevance:** :{score_color}[{result['similarity']:.2f}]
+                                    
+                                    {result['text'][:200]}... 
+                                    
+                                    ---
+                                """)
+                        
+                        with detailed_tab:
+                            for i, result in enumerate(results, 1):
+                                with st.expander(
+                                    f"📄 Result {i}: {result['company']} ({result.get('date', 'No date')}) - Relevance: {result['similarity']:.2f}"
+                                ):
+                                    st.markdown(f"**Company:** {result['company']}")
+                                    st.markdown(f"**Date:** {result.get('date', 'No date')}")
+                                    st.markdown(f"**Source File:** {result['source_file']}")
+                                    
+                                    if st.checkbox(f"Show debug info {i}", key=f"debug_{i}"):
+                                        st.write("Score Details:")
+                                        st.write(f"Vector Score: {result.get('vector_score', 0):.3f}")
+                                        st.write(f"Fuzzy Score: {result.get('fuzzy_score', 0):.3f}")
+                                        st.write(f"Partial Score: {result.get('partial_score', 0):.3f}")
+                                        st.write(f"Token Score: {result.get('token_score', 0):.3f}")
+                                        st.write(f"Exact Match: {result.get('has_exact_match', False)}")
+                                    
+                                    st.markdown("**Text:**")
+                                    st.text(result['text'])
                     else:
                         st.info("No results found.")
                         
         except Exception as e:
             st.error(f"Error connecting to the database: {str(e)}")
-            st.info("Please make sure the database is properly configured.")    
+            st.info("Please make sure the database is properly configured.")
+            
 if __name__ == "__main__":
     main()
