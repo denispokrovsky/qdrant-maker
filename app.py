@@ -156,11 +156,11 @@ class NewsProcessor:
                     break
 
             # Convert bytes to GB
-            size_gb = total_size_bytes / (1024 * 1024 * 1024)
+            size_mb = total_size_bytes / (1024 * 1024)
 
             return {
                 'total_points': total_points,
-                'size_gb': round(size_gb, 2),
+                'size_mb': round(size_mb, 2),
                 'processed_files': len(self.processed_hashes),
                 'last_updated': datetime.now().isoformat()
             }
@@ -169,19 +169,19 @@ class NewsProcessor:
             st.warning(f"Could not retrieve collection stats: {str(e)}")
             return {
                 'total_points': 0,
-                'size_gb': 0,
+                'size_mb': 0,
                 'processed_files': 0,
                 'last_updated': 'Never'
             }
 
     # Then in main(), update the sidebar display:
     with st.sidebar:
-        st.title("⚙️ Settings & Stats")
+        st.title("⚙️ Статистика. Настройки.")
         
-        st.markdown("### Database Stats")
+        st.markdown("### Статистика БД")
         st.write(f"всего новостей: {stats['total_points']}")
         st.write(f"файлов обработано: {stats['processed_files']}")
-        st.write(f"Размер базы: {stats['size_gb']} GB")
+        st.write(f"Размер базы: {stats['size_mb']} MB")
         st.write(f"Обновлено: {stats['last_updated']}")
         
         st.markdown("---")
