@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 # Page config
 st.set_page_config(
-    page_title="News Processor",
+    page_title="обработка новостного потока для базы поиска фактов",
     page_icon="📰",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -436,6 +436,9 @@ class NewsProcessor:
                 
 
                 # Convert dates but keep invalid ones
+                
+                df['date'] = df['date'].str.extract(r'(\d{2}\.\d{2}\.\d{4})')
+
                 df['parsed_date'] = df['date'].apply(parse_date)
                 
                 # Count invalid dates
@@ -608,9 +611,9 @@ def main():
         st.title("⚙️ Settings & Stats")
         
         st.markdown("### Database Stats")
-        st.write(f"Total News Items: {stats['total_points']}")
-        st.write(f"Processed Files: {stats['processed_files']}")
-        st.write(f"Last Updated: {stats['last_updated']}")
+        st.write(f"всего новостей: {stats['total_points']}")
+        st.write(f"файлов обработано: {stats['processed_files']}")
+        st.write(f"Обновлено: {stats['last_updated']}")
         
         st.markdown("---")
         
@@ -622,21 +625,21 @@ def main():
             help="Higher values mean more strict deduplication"
         )
     
-    tab1, tab2 = st.tabs(["Process Files", "Search News"])
+    tab1, tab2 = st.tabs(["Обработать файлы", "Искать по новостям"])
     
     with tab1:
-        st.header("Process Excel Files")
+        st.header("Обработка и перекодирование Excel-файлов")
         uploaded_files = st.file_uploader(
-            "Choose Excel files",
+            "Выбирай excel-файл",
             type=['xlsx'],
             accept_multiple_files=True,
             help="Select one or more Excel files to process"
         )
         
         if uploaded_files:
-            with st.spinner("Processing files..."):
+            with st.spinner("Обрабатываю файлы..."):
                 for file in uploaded_files:
-                    st.subheader(f"Processing {file.name}")
+                    st.subheader(f"Обрабатываю файл {file.name}")
                     
                     processed_count = processor.process_excel_file(
                         file,
@@ -644,18 +647,18 @@ def main():
                     )
                     
                     if processed_count > 0:
-                        st.success(f"Added {processed_count} new news items from {file.name}")
+                        st.success(f"Добавил {processed_count} сообщений {file.name}")
             
             # Refresh stats after processing
             stats = processor.get_collection_stats()
             st.success(f"""
-                Processing complete! 🎉
-                - Total news items in database: {stats['total_points']}
-                - Total files processed: {stats['processed_files']}
-                - Last updated: {stats['last_updated']}
+                Готово! 🎉
+                - Всего новостей в БД: {stats['total_points']}
+                - Файлов обработано: {stats['processed_files']}
+                - Обновлено: {stats['last_updated']}
             """)
     with tab2:
-        st.header("Search News")
+        st.header("Искать по новостям")
         
         try:
             # Get unique companies
@@ -687,7 +690,7 @@ def main():
             companies = sorted(companies)
             
             if not companies:
-                st.warning("No companies found in the database.")
+                st.warning("На нашел компаний")
                 return
             
             # Search interface
@@ -697,18 +700,18 @@ def main():
                 search_query = st.text_input(
                     "Search Query",
                     "",
-                    help="Enter keywords to search for in news articles"
+                    help="Введите ключевые слова"
                 )
             
             with col2:
                 selected_company = st.selectbox(
-                    "Filter by Company",
-                    ["All Companies"] + companies
+                    "Фильтр по компаниям",
+                    ["Все компании"] + companies
                 )
             
             with col3:
                 num_results = st.number_input(
-                    "Max Results",
+                    "Макс. кол-во рез-тов",
                     min_value=1,
                     max_value=50,
                     value=5
@@ -716,7 +719,7 @@ def main():
             
             # Search button with unique key
             if st.button("🔍 Search", key="search_button") and search_query:
-                with st.spinner("Searching..."):
+                with st.spinner("ищу..."):
                     results = processor.search_news(
                         search_query,
                         selected_company,
@@ -725,10 +728,10 @@ def main():
                     
                     if results:
                         # Add search summary
-                        st.success(f"Found {len(results)} results matching your query")
+                        st.success(f"Нашел {len(results)} результатов по запросу")
                         
                         # Create tabs for different views
-                        list_tab, detailed_tab = st.tabs(["List View", "Detailed View"])
+                        list_tab, detailed_tab = st.tabs(["Список", "Детально"])
                         
                         with list_tab:
                             for i, result in enumerate(results, 1):
@@ -765,8 +768,8 @@ def main():
                         st.info("No results found.")
                         
         except Exception as e:
-            st.error(f"Error connecting to the database: {str(e)}")
-            st.info("Please make sure the database is properly configured.")
-            
+            st.error(f"Не могу соединиться с БД: {str(e)}")
+            st.info("БД надо правильно сконфигурировать, а сейчас неправильно сконфигурирована.")
+
 if __name__ == "__main__":
     main()
