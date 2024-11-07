@@ -132,48 +132,28 @@ class NewsProcessor:
                     collection_name=self.collection_name,
                     limit=batch_size,
                     offset=offset,
-                    with_payload=True,
-                    filter=models.Filter(
-                        must_not=[
-                            models.FieldCondition(
-                                key="is_metadata",
-                                match=models.MatchValue(value=True)
-                            )
-                        ]
-                    )
+                    with_payload=True
                 )
                 
                 if not response or not response[0]:
                     break
                     
                 points, offset = response
-                total_points += len(points)
+                
+                # Filter out metadata points in Python
+                news_points = [p for p in points if not p.payload.get('is_metadata', False)]
+                total_points += len(news_points)
+                
+                # Get metadata from the points if present
+                metadata_points = [p for p in points if p.payload.get('is_metadata', False)]
+                if metadata_points:
+                    metadata = metadata_points[0].payload
                 
                 if not offset:
                     break
 
-            # Get metadata for processed files and last update
-            try:
-                metadata_response = self.qdrant.scroll(
-                    collection_name=self.collection_name,
-                    limit=1,
-                    with_payload=True,
-                    filter=models.Filter(
-                        must=[
-                            models.FieldCondition(
-                                key="is_metadata",
-                                match=models.MatchValue(value=True)
-                            )
-                        ]
-                    )
-                )
-                
-                if metadata_response and metadata_response[0] and len(metadata_response[0]) > 0:
-                    metadata = metadata_response[0][0].payload
-                else:
-                    metadata = {'processed_files': [], 'last_updated': 'Never'}
-                    
-            except Exception:
+            # If we didn't find metadata in the points, use default values
+            if not metadata_points:
                 metadata = {'processed_files': [], 'last_updated': 'Never'}
 
             return {
@@ -189,31 +169,44 @@ class NewsProcessor:
                 'processed_files': 0,
                 'last_updated': 'Never'
             }
+        
     def _update_metadata(self, file_name: str):
         """Update collection metadata after processing a file"""
         try:
             # Get current metadata
-            metadata_response = self.qdrant.scroll(
-                collection_name=self.collection_name,
-                limit=1,
-                with_payload=True,
-                filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="is_metadata",
-                            match=models.MatchValue(value=True)
-                        )
-                    ]
-                )
-            )
+            offset = None
+            metadata_id = 0
+            current_metadata = None
             
-            if metadata_response and metadata_response[0] and len(metadata_response[0]) > 0:
-                current_metadata = metadata_response[0][0].payload
+            # Scroll through points to find metadata
+            while True:
+                response = self.qdrant.scroll(
+                    collection_name=self.collection_name,
+                    limit=100,
+                    offset=offset,
+                    with_payload=True
+                )
+                
+                if not response or not response[0]:
+                    break
+                    
+                points, offset = response
+                
+                # Look for metadata point
+                for point in points:
+                    if point.payload.get('is_metadata', False):
+                        current_metadata = point.payload
+                        metadata_id = point.id
+                        break
+                
+                if current_metadata or not offset:
+                    break
+
+            # Get existing processed files
+            if current_metadata:
                 processed_files = set(current_metadata.get('processed_files', []))
-                metadata_id = metadata_response[0][0].id
             else:
                 processed_files = set()
-                metadata_id = 0
 
             # Update metadata
             processed_files.add(file_name)
@@ -240,7 +233,6 @@ class NewsProcessor:
             
         except Exception as e:
             st.warning(f"Could not update metadata: {str(e)}")
-
 
     def _initialize_metadata(self):
         """Initialize collection metadata"""
@@ -397,45 +389,36 @@ class NewsProcessor:
         try:
             query_vector = self.model.encode(query)
             
-            filter_conditions = None
-            if company and company != "All Companies":
-                filter_conditions = models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="company",
-                            match=models.MatchValue(value=company)
-                        ),
-                        models.FieldCondition(
-                            key="is_metadata",
-                            match=models.MatchValue(value=True),
-                            is_negated=True
-                        )
-                    ]
-                )
-            else:
-                filter_conditions = models.Filter(
-                    must_not=[
-                        models.FieldCondition(
-                            key="is_metadata",
-                            match=models.MatchValue(value=True)
-                        )
-                    ]
-                )
-            
+            # Search all points
             results = self.qdrant.search(
                 collection_name=self.collection_name,
                 query_vector=query_vector,
-                limit=limit,
-                query_filter=filter_conditions
+                limit=limit * 2  # Get more results initially to allow for filtering
             )
             
-            return [{
-                'company': hit.payload['company'],
-                'date': hit.payload['date'],
-                'text': hit.payload['text'],
-                'similarity': hit.score,
-                'source_file': hit.payload.get('source_file', 'Unknown')
-            } for hit in results]
+            # Filter results in Python
+            filtered_results = []
+            for hit in results:
+                # Skip metadata points
+                if hit.payload.get('is_metadata', False):
+                    continue
+                    
+                # Apply company filter if specified
+                if company and company != "All Companies" and hit.payload['company'] != company:
+                    continue
+                    
+                filtered_results.append({
+                    'company': hit.payload['company'],
+                    'date': hit.payload['date'],
+                    'text': hit.payload['text'],
+                    'similarity': hit.score,
+                    'source_file': hit.payload.get('source_file', 'Unknown')
+                })
+                
+                if len(filtered_results) >= limit:
+                    break
+            
+            return filtered_results
             
         except Exception as e:
             st.error(f"Search error: {str(e)}")
