@@ -120,10 +120,10 @@ class NewsProcessor:
             st.warning(f"Could not load existing hashes: {str(e)}")
             return set()
     def get_collection_stats(self) -> Dict:
-        """Get collection statistics including size"""
+        """Get current collection statistics"""
         try:
+            # Count total points by scrolling through the collection
             total_points = 0
-            total_size_bytes = 0
             offset = None
             batch_size = 100
 
@@ -140,41 +140,36 @@ class NewsProcessor:
                     
                 points, offset = response
                 
-                # Filter out metadata points
+                # Filter out metadata points in Python
                 news_points = [p for p in points if not p.payload.get('is_metadata', False)]
                 total_points += len(news_points)
                 
-                # Calculate size for each point
-                for point in news_points:
-                    # Vector size (float32 * vector dimension)
-                    vector_size = len(point.vector) * 4
-                    # Payload size (rough estimation)
-                    payload_size = len(str(point.payload).encode('utf-8'))
-                    total_size_bytes += vector_size + payload_size
+                # Get metadata from the points if present
+                metadata_points = [p for p in points if p.payload.get('is_metadata', False)]
+                if metadata_points:
+                    metadata = metadata_points[0].payload
                 
                 if not offset:
                     break
 
-            # Convert bytes to GB
-            size_mb = total_size_bytes / (1024 * 1024)
+            # If we didn't find metadata in the points, use default values
+            if not metadata_points:
+                metadata = {'processed_files': [], 'last_updated': 'Never'}
 
             return {
                 'total_points': total_points,
-                'size_mb': round(size_mb, 2),
-                'processed_files': len(self.processed_hashes),
-                'last_updated': datetime.now().isoformat()
+                'processed_files': len(metadata.get('processed_files', [])),
+                'last_updated': metadata.get('last_updated', 'Never')
             }
-                    
+                
         except Exception as e:
             st.warning(f"Could not retrieve collection stats: {str(e)}")
             return {
                 'total_points': 0,
-                'size_mb': 0,
                 'processed_files': 0,
                 'last_updated': 'Never'
             }
-
-
+        
     def _update_metadata(self, file_name: str):
         """Update collection metadata after processing a file"""
         try:
@@ -594,14 +589,13 @@ def main():
     
     # Display stats in sidebar
     with st.sidebar:
-        st.title("⚙️ Статистика. Настройки.")
+        st.title("⚙️ Статистика & Настройки")
         
         st.markdown("### Статистика БД")
         st.write(f"всего новостей: {stats['total_points']}")
         st.write(f"файлов обработано: {stats['processed_files']}")
-        st.write(f"Размер базы: {stats['size_mb']} MB")
         st.write(f"Обновлено: {stats['last_updated']}")
-
+        
         st.markdown("---")
         
         similarity_threshold = st.slider(
