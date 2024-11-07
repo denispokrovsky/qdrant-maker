@@ -47,6 +47,10 @@ class NewsProcessor:
             try:
                 # Try a smaller, more stable model as fallback
                 self.model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+            except Exception as e:
+                st.error(f"Failed to load fallback model: {str(e)}")
+                st.error("Please check your internet connection and try again.")
+                st.stop()
 
         # Initialize Qdrant client with better error handling
         try:
