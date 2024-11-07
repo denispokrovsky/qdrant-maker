@@ -293,93 +293,164 @@ class NewsProcessor:
         except Exception:
             return False
 
+
+    def _hash_news(self, company: str, date: datetime, text: str) -> str:
+        """Create hash from news content to identify duplicates"""
+        try:
+            # Convert all inputs to strings and normalize them
+            company_str = str(company).strip().lower()
+            date_str = date.isoformat() if isinstance(date, datetime) else str(date)
+            text_str = str(text).strip().lower()
+            
+            # Combine the fields to create a unique identifier
+            content = f"{company_str}{date_str}{text_str}".encode('utf-8')
+            
+            # Create hash
+            return hashlib.md5(content).hexdigest()
+            
+        except Exception as e:
+            st.error(f"Error creating hash: {str(e)}")
+            # Return a random hash to prevent processing failure
+            return hashlib.md5(str(datetime.now().timestamp()).encode('utf-8')).hexdigest()
+    
+
     def process_excel_file(self, file, similarity_threshold: float) -> int:
         """Process a single Excel file"""
-        # Check if file was already processed
         if self.is_file_processed(file.name):
             st.warning(f"File {file.name} was already processed. Skipping...")
             return 0
             
         try:
-            # Read Excel file
-            df = pd.read_excel(
-                file,
-                sheet_name='Публикации',
-                usecols="A,D,G",
-                header=0
-            )
-            
-            # Basic data cleaning
-            df.columns = ['company', 'date', 'text']
-            df = df.dropna(subset=['company', 'date', 'text'])
-            df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y %H:%M', errors='coerce')
-            
-            # Deduplicate within file
-            original_count = len(df)
-            df = self.fuzzy_deduplicate(df, similarity_threshold)
-            deduped_count = len(df)
-            
-            st.info(f"Removed {original_count - deduped_count} duplicate entries from {file.name}")
-            
-            # Process entries
-            processed_count = 0
-            points = []
-            
-            progress_bar = st.progress(0)
-            
-            for i, row in enumerate(df.iterrows()):
-                row = row[1]
-                news_hash = self._hash_news(row['company'], row['date'], row['text'])
-                
-                if news_hash in self.processed_hashes:
-                    continue
-                    
-                try:
-                    embedding = self.model.encode(row['text'])
-                    
-                    points.append(models.PointStruct(
-                        id=len(self.processed_hashes),
-                        vector=embedding.tolist(),
-                        payload={
-                            'company': row['company'],
-                            'date': row['date'].isoformat(),
-                            'text': row['text'],
-                            'source_file': file.name,
-                            'hash': news_hash
-                        }
-                    ))
-                    
-                    self.processed_hashes.add(news_hash)
-                    processed_count += 1
-                    
-                    # Batch insert every 20 points to avoid memory issues
-                    if len(points) >= 20:
-                        self.qdrant.upsert(
-                            collection_name=self.collection_name,
-                            wait=True,
-                            points=points
-                        )
-                        points = []
-                    
-                except Exception as e:
-                    st.warning(f"Error processing row {i}: {str(e)}")
-                    continue
-                
-                progress_bar.progress((i + 1) / len(df))
-            
-            # Insert remaining points
-            if points:
-                self.qdrant.upsert(
-                    collection_name=self.collection_name,
-                    wait=True,
-                    points=points
+            # First check if the sheet exists
+            try:
+                xls = pd.ExcelFile(file)
+                if 'Публикации' not in xls.sheet_names:
+                    st.error(f"Sheet 'Публикации' not found in {file.name}")
+                    return 0
+            except Exception as e:
+                st.error(f"Error reading {file.name}: {str(e)}")
+                return 0
+
+            # Read the specific columns using Excel notation
+            try:
+                df = pd.read_excel(
+                    file,
+                    sheet_name='Публикации',
+                    usecols="A,D,G",  # This will read columns A, D, G
+                    header=0
                 )
-            
-            # Update metadata after successful processing
-            self._update_metadata(file.name)
-            
-            return processed_count
-            
+                
+                # Rename columns
+                df.columns = ['company', 'date', 'text']
+                
+                # Remove rows where all values are NaN (empty rows)
+                df = df.dropna(how='all')
+                
+                # Show initial row count
+                initial_count = len(df)
+                st.info(f"Found {initial_count} rows in {file.name}")
+                
+                # Show data preview
+                if not df.empty:
+                    st.write("Preview of the first few rows:")
+                    st.write(df.head())
+                else:
+                    st.warning(f"No data found in {file.name}")
+                    return 0
+                
+                # Clean data: remove rows where any required column is empty
+                df = df.dropna(subset=['company', 'date', 'text'])
+                after_cleaning_count = len(df)
+                if after_cleaning_count < initial_count:
+                    st.info(f"Removed {initial_count - after_cleaning_count} rows with missing data")
+                
+                # Convert dates with error handling
+                try:
+                    df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y %H:%M', errors='coerce')
+                    invalid_dates = df['date'].isna().sum()
+                    df = df.dropna(subset=['date'])
+                    if invalid_dates > 0:
+                        st.warning(f"Found {invalid_dates} rows with invalid dates, they will be skipped")
+                except Exception as e:
+                    st.error(f"Error converting dates: {str(e)}")
+                    return 0
+                
+                if df.empty:
+                    st.warning("No valid data remains after cleaning")
+                    return 0
+                
+                # Deduplicate within file
+                original_count = len(df)
+                df = self.fuzzy_deduplicate(df, similarity_threshold)
+                deduped_count = len(df)
+                
+                st.info(f"Removed {original_count - deduped_count} duplicate entries from {file.name}")
+                
+                # Process entries
+                processed_count = 0
+                points = []
+                
+                progress_bar = st.progress(0)
+                
+                for i, row in enumerate(df.iterrows()):
+                    row = row[1]  # Get the row data
+                    
+                    try:
+                        news_hash = self._hash_news(row['company'], row['date'], row['text'])
+                        
+                        if news_hash in self.processed_hashes:
+                            continue
+                            
+                        embedding = self.model.encode(row['text'])
+                        
+                        points.append(models.PointStruct(
+                            id=len(self.processed_hashes),
+                            vector=embedding.tolist(),
+                            payload={
+                                'company': row['company'],
+                                'date': row['date'].isoformat(),
+                                'text': row['text'],
+                                'source_file': file.name,
+                                'hash': news_hash
+                            }
+                        ))
+                        
+                        self.processed_hashes.add(news_hash)
+                        processed_count += 1
+                        
+                        # Batch insert
+                        if len(points) >= 20:
+                            self.qdrant.upsert(
+                                collection_name=self.collection_name,
+                                wait=True,
+                                points=points
+                            )
+                            points = []
+                            
+                    except Exception as e:
+                        st.warning(f"Error processing row {i + 1}: {str(e)}")
+                        continue
+                    
+                    progress_bar.progress((i + 1) / len(df))
+                
+                # Insert remaining points
+                if points:
+                    self.qdrant.upsert(
+                        collection_name=self.collection_name,
+                        wait=True,
+                        points=points
+                    )
+                
+                # Update metadata if we processed any points
+                if processed_count > 0:
+                    self._update_metadata(file.name)
+                
+                return processed_count
+                
+            except Exception as e:
+                st.error(f"Error reading Excel data: {str(e)}")
+                return 0
+                
         except Exception as e:
             st.error(f"Error processing {file.name}: {str(e)}")
             return 0
