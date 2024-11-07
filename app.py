@@ -55,7 +55,7 @@ class NewsProcessor:
             self.qdrant = QdrantClient(
                 url=st.secrets["QDRANT_URL"],
                 api_key=st.secrets["QDRANT_API_KEY"]
-
+            )
             # Create collection if it doesn't exist
             if not self.qdrant.collection_exists(collection_name):
                 self.qdrant.create_collection(
