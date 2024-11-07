@@ -437,9 +437,9 @@ class NewsProcessor:
 
                 # Convert dates but keep invalid ones
                 
-                df['date'] = df['date'].str.extract(r'(\d{2}\.\d{2}\.\d{4})')
+                df['parsed_date'] = df['date'].str.extract(r'(\d{2}\.\d{2}\.\d{4})')
 
-                df['parsed_date'] = df['date'].apply(parse_date)
+                #df['parsed_date'] = df['date'].apply(parse_date)
                 
                 # Count invalid dates
                 invalid_dates = df['parsed_date'].isna()
@@ -620,9 +620,9 @@ def main():
     
     # Display stats in sidebar
     with st.sidebar:
-        st.title("⚙️ Settings & Stats")
+        st.title("⚙️ Статистика & Настройки")
         
-        st.markdown("### Database Stats")
+        st.markdown("### Статистика БД")
         st.write(f"всего новостей: {stats['total_points']}")
         st.write(f"файлов обработано: {stats['processed_files']}")
         st.write(f"Обновлено: {stats['last_updated']}")
